@@ -1,52 +1,72 @@
 
+import { connect } from './lib/connection.js'
+import config from './config.js'
+
 import fs from 'fs'
 import path from 'path'
+import { fileURLToPath } from 'url'
 import chalk from 'chalk'
-import { fileURLToPath, pathToFileURL } from 'url'
 
-import config from './config.js'
-import {
-    connect,
-    connectedSockets,
-    getConnectedSessions
-} from './lib/connection.js'
-
-// ⚙️ CONFIGURACIÓN
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
-const PLUGINS_DIR = path.join(__dirname, 'plugins')
 
-const PREFIX = config.PREFIX ?? '.'
-const BOT_NAME = config.BOT_NAME ?? 'EXCLUSIVE BOT'
-const OWNER = config.OWNER ?? ''
-
-// 📦 COMANDOS
 const commands = new Map()
-const attachedSockets = new WeakSet()
 const processedMessages = new Set()
 const groupCache = new Map()
+const attachedSockets = new WeakSet()
 
-// ⏱️ IGNORAR MENSAJES ANTERIORES AL ARRANQUE
 const START_TIME = Math.floor(Date.now() / 1000)
 
-// 🧹 CONSOLA
-function banner() {
-    console.clear()
+const PLUGINS_DIR = path.join(__dirname, 'plugins')
 
-    console.log(chalk.cyanBright.bold(`
-╔══════════════════════════════════════╗
-║             EXCLUSIVE                ║
-║        MULTI-SESSION WHATSAPP        ║
-╚══════════════════════════════════════╝
-`))
+function getMessageContent(message) {
+    let msg = message
 
-    console.log(chalk.gray(' Prefijo: ') + chalk.white(PREFIX))
-    console.log(chalk.gray(' Plugins: ') + chalk.white(PLUGINS_DIR))
-    console.log(chalk.gray(' Estado:  ') + chalk.green('Iniciando...'))
-    console.log(chalk.gray('─'.repeat(50)))
+    while (msg) {
+        if (msg.ephemeralMessage?.message) {
+            msg = msg.ephemeralMessage.message
+            continue
+        }
+
+        if (msg.viewOnceMessage?.message) {
+            msg = msg.viewOnceMessage.message
+            continue
+        }
+
+        if (msg.viewOnceMessageV2?.message) {
+            msg = msg.viewOnceMessageV2.message
+            continue
+        }
+
+        if (msg.viewOnceMessageV2Extension?.message) {
+            msg = msg.viewOnceMessageV2Extension.message
+            continue
+        }
+
+        break
+    }
+
+    return msg || {}
 }
 
-// 🔌 CARGAR PLUGINS
+function getText(message) {
+    const msg = getMessageContent(message.message)
+
+    return (
+        msg.conversation ||
+        msg.extendedTextMessage?.text ||
+        msg.imageMessage?.caption ||
+        msg.videoMessage?.caption ||
+        msg.documentMessage?.caption ||
+        msg.documentWithCaptionMessage?.message?.documentMessage?.caption ||
+        msg.buttonsResponseMessage?.selectedButtonId ||
+        msg.listResponseMessage?.singleSelectReply?.selectedRowId ||
+        msg.templateButtonReplyMessage?.selectedId ||
+        msg.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson ||
+        ''
+    ).trim()
+}
+
 async function loadPlugins() {
     commands.clear()
 
@@ -59,15 +79,19 @@ async function loadPlugins() {
 
     for (const file of files) {
         try {
-            const filePath = pathToFileURL(
-                path.join(PLUGINS_DIR, file)
-            ).href
+            const filePath = path.join(PLUGINS_DIR, file)
+            const fileUrl = `file://${filePath.replace(/\\/g, '/')}`
 
-            const module = await import(filePath)
-            const handler = module.default ?? module.handler
+            const plugin = await import(
+                `${fileUrl}?update=${Date.now()}`
+            )
+
+            const handler = plugin.default
 
             if (!handler || typeof handler.run !== 'function') {
-                console.log(chalk.yellow(`⚠ Plugin ignorado: ${file}`))
+                console.log(
+                    chalk.yellow(`⚠️ Plugin ignorado: ${file}`)
+                )
                 continue
             }
 
@@ -75,280 +99,137 @@ async function loadPlugins() {
                 ? handler.command
                 : [handler.command].filter(Boolean)
 
-            if (!names.length) {
-                console.log(chalk.yellow(`⚠ Sin comandos: ${file}`))
-                continue
-            }
-
             for (const name of names) {
-                commands.set(String(name).toLowerCase(), handler)
+                commands.set(
+                    String(name).toLowerCase(),
+                    handler
+                )
             }
 
             console.log(
-                chalk.green(' ✓ ') +
-                chalk.white(file) +
-                chalk.gray(` (${names.join(', ')})`)
+                chalk.green(`✅ Plugin cargado: ${file}`)
             )
         } catch (error) {
-            console.log(
-                chalk.red(`✗ Error en ${file}: ${error.message}`)
+            console.error(
+                chalk.red(`❌ Error en plugin ${file}:`),
+                error.message
             )
         }
     }
 
     console.log(
-        chalk.cyanBright(`\n📦 ${commands.size} comandos registrados\n`)
+        chalk.cyan(`📦 Total de comandos registrados: ${commands.size}`)
     )
 }
 
-// 📝 EXTRAER TEXTO DEL MENSAJE
-function getText(m) {
-    let msg = m?.message
-
-    if (!msg) return ''
-
-    // Desenvolver mensajes temporales y mensajes de una sola vista.
-    for (let i = 0; i < 5; i++) {
-        const wrapper =
-            msg.ephemeralMessage ||
-            msg.viewOnceMessage ||
-            msg.viewOnceMessageV2 ||
-            msg.viewOnceMessageV2Extension
-
-        if (!wrapper?.message) break
-
-        msg = wrapper.message
-    }
-
-    return (
-        msg.conversation ??
-        msg.extendedTextMessage?.text ??
-        msg.imageMessage?.caption ??
-        msg.videoMessage?.caption ??
-        msg.documentMessage?.caption ??
-        msg.buttonsResponseMessage?.selectedButtonId ??
-        msg.listResponseMessage?.singleSelectReply?.selectedRowId ??
-        msg.templateButtonReplyMessage?.selectedId ??
-        msg.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson ??
-        ''
-    ).trim()
+function cleanJid(jid = '') {
+    return jid.replace(/:\d+@/, '@').trim()
 }
 
-// 🕒 CONVERTIR FECHA DE MENSAJE
-function getTimestamp(m) {
-    const timestamp = m.messageTimestamp
-
-    if (timestamp == null) return 0
-
-    if (typeof timestamp.toNumber === 'function') {
-        return timestamp.toNumber()
-    }
-
-    return Number(timestamp)
-}
-
-// 👤 LIMPIAR JID
-function limpiarJid(jid = '') {
-    return String(jid).replace(/:\d+@/, '@').trim()
-}
-
-// 📡 METADATOS DE GRUPOS
-async function getGroupMetadata(sock, jid) {
-    const cached = groupCache.get(jid)
-
-    if (cached && Date.now() - cached.time < 60000) {
-        return cached.data
-    }
-
-    const metadata = await sock.groupMetadata(jid)
-
-    groupCache.set(jid, {
-        data: metadata,
-        time: Date.now()
-    })
-
-    return metadata
-}
-
-// 🔐 CONTEXTO DE PERMISOS
-async function getContext(sock, m) {
-    const jid = m.key.remoteJid
-
-    const sender = limpiarJid(
-        m.key.participant ?? m.key.remoteJid ?? ''
-    )
-
-    const ownerNumber = String(OWNER).replace(/\D/g, '')
-    const senderNumber = sender.split('@')[0].split(':')[0]
-
-    const isOwner = Boolean(
-        ownerNumber && senderNumber === ownerNumber
-    )
-
-    let metadata = null
-    let isAdmin = false
-    let isBotAdmin = false
-
-    if (jid?.endsWith('@g.us')) {
-        try {
-            metadata = await getGroupMetadata(sock, jid)
-
-            const participants = metadata.participants ?? []
-
-            const participant = participants.find(
-                p => limpiarJid(p.id) === sender
-            )
-
-            const botJid = limpiarJid(sock.user?.id ?? '')
-
-            const botParticipant = participants.find(
-                p => limpiarJid(p.id) === botJid
-            )
-
-            isAdmin = Boolean(participant?.admin || isOwner)
-            isBotAdmin = Boolean(botParticipant?.admin)
-        } catch (error) {
-            console.log(
-                chalk.yellow(`⚠ No se pudo consultar el grupo: ${error.message}`)
-            )
-        }
-    }
-
-    return {
-        commands,
-        config,
-        BOT_NAME,
-        OWNER,
-        PREFIX,
-        isOwner,
-        isAdmin,
-        isBotAdmin,
-        groupMetadata: metadata,
-        limpiarJid
-    }
-}
-
-// 🖥️ REGISTRO DE COMANDOS
-function logCommand(command, m, sock, groupName) {
-    const sender = m.pushName || 'Usuario desconocido'
-    const jid = m.key.remoteJid || 'desconocido'
-    const session = sock.sessionId || 'principal'
-
-    console.log(
-        chalk.gray(`[${new Date().toLocaleTimeString()}] `) +
-        chalk.magentaBright(`[${session}] `) +
-        chalk.cyanBright(`ECHO ${PREFIX}${command}`) +
-        chalk.gray(' | ') +
-        chalk.white(sender) +
-        chalk.gray(' | ') +
-        chalk.green(
-            jid.endsWith('@g.us') ? groupName : 'Chat privado'
-        )
-    )
-}
-
-// ⚡ PROCESAR UN MENSAJE
 async function processMessage(sock, m) {
     try {
-        if (!m?.message || !m.key?.remoteJid) return
+        if (!m?.message || !m?.key?.remoteJid) return
 
-        const esPropio = m.key.fromMe === true
+        if (!m.messageTimestamp) return
 
-        if (esPropio && !config.ALLOW_SELF) return
+        const timestamp = Number(m.messageTimestamp)
 
-        const jid = m.key.remoteJid
+        if (timestamp < START_TIME) return
+
+        if (m.key.fromMe && !config.ALLOW_SELF) return
+
+        const chat = m.key.remoteJid
 
         if (
-            jid === 'status@broadcast' ||
-            jid.endsWith('@broadcast')
+            chat === 'status@broadcast' ||
+            chat.endsWith('@broadcast')
         ) return
 
-        // Ignorar mensajes anteriores al arranque.
-        const timestamp = getTimestamp(m)
-
-        if (!timestamp || timestamp < START_TIME) return
-
-        // Evitar procesar dos veces el mismo mensaje por sesión.
         const messageId = m.key.id
 
         if (!messageId) return
 
-        const uniqueId =
-            `${sock.sessionId || 'principal'}:${jid}:${messageId}`
+        const uniqueId = `${chat}:${messageId}`
 
         if (processedMessages.has(uniqueId)) return
 
         processedMessages.add(uniqueId)
 
-        if (processedMessages.size > 10000) {
+        if (processedMessages.size > 5000) {
             const first = processedMessages.values().next().value
             processedMessages.delete(first)
         }
 
-        const text = getText(m)
+        const body = getText(m)
 
-        if (!text.startsWith(PREFIX)) return
+        if (!body || !body.startsWith(config.PREFIX)) return
 
-        const body = text.slice(PREFIX.length).trim()
+        const input = body.slice(config.PREFIX.length).trim()
 
-        if (!body) return
+        if (!input) return
 
-        const parts = body.split(/\s+/)
-        const command = parts.shift().toLowerCase()
+        const parts = input.split(/\s+/)
+        const commandName = parts.shift().toLowerCase()
         const args = parts
 
-        const handler = commands.get(command)
+        const handler = commands.get(commandName)
 
         if (!handler) return
 
-        let groupName = 'Chat privado'
+        let groupMetadata = null
 
-        if (jid.endsWith('@g.us')) {
-            try {
-                const metadata = await getGroupMetadata(sock, jid)
-                groupName = metadata.subject || 'Grupo sin nombre'
-            } catch {
-                groupName = jid
+        if (chat.endsWith('@g.us')) {
+            const cached = groupCache.get(chat)
+
+            if (cached && Date.now() - cached.time < 60000) {
+                groupMetadata = cached.data
+            } else {
+                try {
+                    groupMetadata = await sock.groupMetadata(chat)
+
+                    groupCache.set(chat, {
+                        data: groupMetadata,
+                        time: Date.now()
+                    })
+                } catch {
+                    groupMetadata = null
+                }
             }
         }
 
-        logCommand(command, m, sock, groupName)
+        const context = {
+            commands,
+            groupMetadata,
+            isGroup: chat.endsWith('@g.us'),
+            cleanJid,
+            config
+        }
 
-        const context = await getContext(sock, m)
-
-        // Cada comando se ejecuta de forma independiente.
         await handler.run(sock, m, args, context)
 
     } catch (error) {
         console.error(
-            chalk.red(`[ERROR] ${error.stack || error.message}`)
+            chalk.red('❌ Error procesando mensaje:'),
+            error?.stack || error
         )
     }
 }
 
-// 🔗 REGISTRAR CADA SOCKET UNA SOLA VEZ
 function attachSocket(sock) {
     if (!sock || attachedSockets.has(sock)) return
 
     attachedSockets.add(sock)
 
-    console.log(
-        chalk.green('● ') +
-        chalk.white(
-            `Socket registrado: ${sock.sessionId || 'principal'}`
-        )
-    )
-
     sock.ev.on('messages.upsert', ({ messages, type }) => {
         if (type !== 'notify' && type !== 'append') return
 
-        for (const m of messages) {
+        for (const m of messages || []) {
             void processMessage(sock, m)
         }
     })
 
     sock.ev.on('groups.update', updates => {
-        for (const update of updates) {
+        for (const update of updates || []) {
             if (update.id) groupCache.delete(update.id)
         }
     })
@@ -356,57 +237,43 @@ function attachSocket(sock) {
     sock.ev.on('group-participants.update', update => {
         if (update.id) groupCache.delete(update.id)
     })
+
+    console.log(
+        chalk.green('✅ Procesamiento de mensajes activado')
+    )
 }
 
-// 🚀 INICIO
 async function start() {
-    banner()
+    console.log(chalk.cyan('🚀 Iniciando EXCLUSIVE BOT...'))
 
     await loadPlugins()
 
-    // Conectar el bot principal.
     const sock = await connect()
 
     attachSocket(sock)
 
-    // Registrar sesiones adicionales actuales y futuras.
-    const scanSessions = () => {
-        for (const socket of connectedSockets.values()) {
-            attachSocket(socket)
-        }
-    }
-
-    scanSessions()
-
-    const sessionWatcher = setInterval(scanSessions, 1000)
-    sessionWatcher.unref?.()
-
-    console.log(chalk.gray('─'.repeat(50)))
-
     console.log(
-        chalk.greenBright.bold(
-            `✅ ${BOT_NAME} está listo para recibir comandos`
-        )
+        chalk.green('✅ EXCLUSIVE BOT iniciado con una sola conexión')
     )
-
-    console.log(
-        chalk.gray(`👑 Owner: ${OWNER || 'No configurado'}`)
-    )
-
-    console.log(
-        chalk.gray(
-            `🔌 Sesiones registradas: ${getConnectedSessions().length}`
-        )
-    )
-
-    console.log(chalk.gray('─'.repeat(50)))
 }
+
+process.on('unhandledRejection', error => {
+    console.error(
+        chalk.red('❌ Promesa rechazada:'),
+        error?.stack || error
+    )
+})
+
+process.on('uncaughtException', error => {
+    console.error(
+        chalk.red('❌ Error inesperado:'),
+        error?.stack || error
+    )
+})
 
 start().catch(error => {
     console.error(
-        chalk.redBright('❌ Error iniciando EXCLUSIVE:'),
-        error
+        chalk.red('❌ No se pudo iniciar el bot:'),
+        error?.stack || error
     )
-
-    process.exitCode = 1
 })
