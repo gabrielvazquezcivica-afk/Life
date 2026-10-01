@@ -1,5 +1,5 @@
 
-import { connect } from './lib/connection.js'
+import { connect, connectedSockets } from './lib/connection.js'
 import config from './config.js'
 
 import fs from 'fs'
@@ -10,14 +10,14 @@ import chalk from 'chalk'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
+const PLUGINS_DIR = path.join(__dirname, 'plugins')
+
 const commands = new Map()
 const processedMessages = new Set()
 const groupCache = new Map()
 const attachedSockets = new WeakSet()
 
 const START_TIME = Math.floor(Date.now() / 1000)
-
-const PLUGINS_DIR = path.join(__dirname, 'plugins')
 
 function getMessageContent(message) {
     let msg = message
@@ -49,8 +49,8 @@ function getMessageContent(message) {
     return msg || {}
 }
 
-function getText(message) {
-    const msg = getMessageContent(message.message)
+function getText(m) {
+    const msg = getMessageContent(m.message)
 
     return (
         msg.conversation ||
@@ -65,6 +65,10 @@ function getText(message) {
         msg.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson ||
         ''
     ).trim()
+}
+
+function cleanJid(jid = '') {
+    return jid.replace(/:\d+@/, '@').trim()
 }
 
 async function loadPlugins() {
@@ -82,16 +86,14 @@ async function loadPlugins() {
             const filePath = path.join(PLUGINS_DIR, file)
             const fileUrl = `file://${filePath.replace(/\\/g, '/')}`
 
-            const plugin = await import(
+            const imported = await import(
                 `${fileUrl}?update=${Date.now()}`
             )
 
-            const handler = plugin.default
+            const handler = imported.default
 
             if (!handler || typeof handler.run !== 'function') {
-                console.log(
-                    chalk.yellow(`⚠️ Plugin ignorado: ${file}`)
-                )
+                console.log(chalk.yellow(`⚠️ Plugin ignorado: ${file}`))
                 continue
             }
 
@@ -100,30 +102,21 @@ async function loadPlugins() {
                 : [handler.command].filter(Boolean)
 
             for (const name of names) {
-                commands.set(
-                    String(name).toLowerCase(),
-                    handler
-                )
+                commands.set(String(name).toLowerCase(), handler)
             }
 
-            console.log(
-                chalk.green(`✅ Plugin cargado: ${file}`)
-            )
+            console.log(chalk.green(`✅ Plugin cargado: ${file}`))
         } catch (error) {
             console.error(
-                chalk.red(`❌ Error en plugin ${file}:`),
+                chalk.red(`❌ Error cargando ${file}:`),
                 error.message
             )
         }
     }
 
     console.log(
-        chalk.cyan(`📦 Total de comandos registrados: ${commands.size}`)
+        chalk.cyan(`📦 Comandos registrados: ${commands.size}`)
     )
-}
-
-function cleanJid(jid = '') {
-    return jid.replace(/:\d+@/, '@').trim()
 }
 
 async function processMessage(sock, m) {
@@ -133,7 +126,6 @@ async function processMessage(sock, m) {
         if (!m.messageTimestamp) return
 
         const timestamp = Number(m.messageTimestamp)
-
         if (timestamp < START_TIME) return
 
         if (m.key.fromMe && !config.ALLOW_SELF) return
@@ -146,18 +138,18 @@ async function processMessage(sock, m) {
         ) return
 
         const messageId = m.key.id
-
         if (!messageId) return
 
-        const uniqueId = `${chat}:${messageId}`
+        const sessionId = sock.sessionId || 'principal'
+        const uniqueId = `${sessionId}:${chat}:${messageId}`
 
         if (processedMessages.has(uniqueId)) return
 
         processedMessages.add(uniqueId)
 
         if (processedMessages.size > 5000) {
-            const first = processedMessages.values().next().value
-            processedMessages.delete(first)
+            const oldest = processedMessages.values().next().value
+            processedMessages.delete(oldest)
         }
 
         const body = getText(m)
@@ -165,7 +157,6 @@ async function processMessage(sock, m) {
         if (!body || !body.startsWith(config.PREFIX)) return
 
         const input = body.slice(config.PREFIX.length).trim()
-
         if (!input) return
 
         const parts = input.split(/\s+/)
@@ -173,13 +164,12 @@ async function processMessage(sock, m) {
         const args = parts
 
         const handler = commands.get(commandName)
-
         if (!handler) return
 
         let groupMetadata = null
 
         if (chat.endsWith('@g.us')) {
-            const cached = groupCache.get(chat)
+            const cached = groupCache.get(`${sessionId}:${chat}`)
 
             if (cached && Date.now() - cached.time < 60000) {
                 groupMetadata = cached.data
@@ -187,7 +177,7 @@ async function processMessage(sock, m) {
                 try {
                     groupMetadata = await sock.groupMetadata(chat)
 
-                    groupCache.set(chat, {
+                    groupCache.set(`${sessionId}:${chat}`, {
                         data: groupMetadata,
                         time: Date.now()
                     })
@@ -202,14 +192,18 @@ async function processMessage(sock, m) {
             groupMetadata,
             isGroup: chat.endsWith('@g.us'),
             cleanJid,
-            config
+            config,
+            sessionId
         }
 
-        await handler.run(sock, m, args, context)
+        console.log(
+            chalk.gray(`[${sessionId}] ${config.PREFIX}${commandName} | ${chat}`)
+        )
 
+        await handler.run(sock, m, args, context)
     } catch (error) {
         console.error(
-            chalk.red('❌ Error procesando mensaje:'),
+            chalk.red(`[${sock.sessionId || 'principal'}] Error procesando mensaje:`),
             error?.stack || error
         )
     }
@@ -230,16 +224,20 @@ function attachSocket(sock) {
 
     sock.ev.on('groups.update', updates => {
         for (const update of updates || []) {
-            if (update.id) groupCache.delete(update.id)
+            if (update.id) {
+                groupCache.delete(`${sock.sessionId}:${update.id}`)
+            }
         }
     })
 
     sock.ev.on('group-participants.update', update => {
-        if (update.id) groupCache.delete(update.id)
+        if (update.id) {
+            groupCache.delete(`${sock.sessionId}:${update.id}`)
+        }
     })
 
     console.log(
-        chalk.green('✅ Procesamiento de mensajes activado')
+        chalk.green(`✅ Escuchando mensajes: ${sock.sessionId || 'principal'}`)
     )
 }
 
@@ -248,13 +246,26 @@ async function start() {
 
     await loadPlugins()
 
-    const sock = await connect()
+    // connect() inicia las sesiones guardadas y devuelve un socket inicial.
+    const firstSocket = await connect()
 
-    attachSocket(sock)
+    if (firstSocket) {
+        attachSocket(firstSocket)
+    }
 
-    console.log(
-        chalk.green('✅ EXCLUSIVE BOT iniciado con una sola conexión')
-    )
+    // Registrar todas las sesiones creadas durante el inicio.
+    for (const sock of connectedSockets.values()) {
+        attachSocket(sock)
+    }
+
+    // Detectar nuevas sesiones y reconexiones.
+    setInterval(() => {
+        for (const sock of connectedSockets.values()) {
+            attachSocket(sock)
+        }
+    }, 1000)
+
+    console.log(chalk.green('✅ Sistema multi-sesión iniciado'))
 }
 
 process.on('unhandledRejection', error => {
