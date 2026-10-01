@@ -4,19 +4,25 @@ import { connectAdditional } from '../lib/connection.js'
 const NUMERO_BOT_AUTORIZADO = '12514487515'
 
 function limpiarNumero(numero) {
-    return String(numero || '')
-        .split('@')[0]
-        .split(':')[0]
-        .replace(/\D/g, '')
+    let limpio = String(numero || '').replace(/\D/g, '')
+
+    // Eliminar el prefijo internacional 00
+    if (limpio.startsWith('00')) {
+        limpio = limpio.slice(2)
+    }
+
+    return limpio
 }
 
 function esBotAutorizado(sock) {
     const identificador = sock.user?.id || ''
-    const numero = limpiarNumero(identificador)
+    const numeroBot = limpiarNumero(
+        identificador.split('@')[0].split(':')[0]
+    )
 
     return (
-        numero === NUMERO_BOT_AUTORIZADO ||
-        numero === `1${NUMERO_BOT_AUTORIZADO}`
+        numeroBot === NUMERO_BOT_AUTORIZADO ||
+        numeroBot === `1${NUMERO_BOT_AUTORIZADO}`
     )
 }
 
@@ -27,17 +33,26 @@ const handler = {
     menu: true,
 
     run: async (sock, m, args) => {
-        // Los demás bots no responden.
+        // Solo responde el bot autorizado.
         if (!esBotAutorizado(sock)) return
 
         const chat = m.key.remoteJid
-        const numero = args.join('').replace(/\D/g, '')
 
-        if (!numero || numero.length < 8 || numero.length > 15) {
+        // Aceptar números con espacios, símbolos y guiones.
+        const numero = limpiarNumero(args.join(''))
+
+        if (numero.length < 8 || numero.length > 15) {
             return sock.sendMessage(
                 chat,
                 {
-                    text: '📱 Usa el comando así:\n.code 521XXXXXXXXXX\n\nIncluye el código de país.'
+                    text:
+                        '📱 *Número no válido*\n\n' +
+                        'Ejemplos:\n' +
+                        '• .code +52 123 456 7890\n' +
+                        '• .code 52-123-456-7890\n' +
+                        '• .code (52) 123.456.7890\n' +
+                        '• .code 00521234567890\n\n' +
+                        'Incluye el código de país.'
                 },
                 { quoted: m }
             )
@@ -47,7 +62,10 @@ const handler = {
         const aviso = await sock.sendMessage(
             chat,
             {
-                text: '⏳ Preparando el código de vinculación...\n\nEspera un momento.'
+                text:
+                    '⏳ *Preparando código de vinculación...*\n\n' +
+                    `📱 Número: ${numero}\n` +
+                    'Espera un momento.'
             },
             { quoted: m }
         )
@@ -60,32 +78,34 @@ const handler = {
         })
 
         try {
+            // Generar el código sin enviarlo desde connection.js.
             const resultado = await connectAdditional(numero)
 
             // Segundo mensaje: código separado.
-            const mensajeCodigo = await sock.sendMessage(
-                chat,
-                {
-                    text:
-                        `🔑 *CÓDIGO DE VINCULACIÓN*\n\n` +
-                        `📱 Número: ${numero}\n` +
-                        `🔐 Código: *${resultado.code}*\n\n` +
-                        `Ingresa el código en el teléfono que quieres vincular.`
-                }
-            )
+            const mensajeCodigo = await sock.sendMessage(chat, {
+                text:
+                    '🔑 *CÓDIGO DE VINCULACIÓN*\n\n' +
+                    `📱 Número: ${numero}\n` +
+                    `🔐 Código: *${resultado.code}*\n\n` +
+                    'Introduce el código en WhatsApp del teléfono ' +
+                    'que quieres vincular.'
+            })
 
-            // Reacción al mensaje que contiene el código.
+            // Reaccionar al mensaje del código.
             await sock.sendMessage(chat, {
                 react: {
                     text: '🔑',
                     key: mensajeCodigo.key
                 }
             })
+
         } catch (error) {
             await sock.sendMessage(
                 chat,
                 {
-                    text: `❌ No se pudo generar el código.\n\n${error.message}`
+                    text:
+                        '❌ *Error al generar el código*\n\n' +
+                        `${error.message || 'Inténtalo de nuevo.'}`
                 }
             )
         }
