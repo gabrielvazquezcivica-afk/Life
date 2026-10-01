@@ -15,6 +15,7 @@ const config = {
     ],
 
     PREFIX: '.'
+ALLOW_SELF: true
 }
 
 export default config
