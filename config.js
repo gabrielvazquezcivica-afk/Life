@@ -14,7 +14,7 @@ const config = {
         ''
     ],
 
-    PREFIX: '.'
+    PREFIX: '.',
 ALLOW_SELF: true
 }
 
