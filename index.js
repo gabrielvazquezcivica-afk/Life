@@ -1,76 +1,148 @@
 
-import { connect } from './lib/connection.js'
-import config from './config.js'
-
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 import chalk from 'chalk'
+import config from './config.js'
+import { connect } from './lib/connection.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
-
 const PLUGINS_DIR = path.join(__dirname, 'plugins')
+
+const PREFIX = config.PREFIX || '.'
+const START_TIME = Math.floor(Date.now() / 1000)
 
 const commands = new Map()
 const processedMessages = new Set()
 const groupCache = new Map()
-const attachedSockets = new WeakSet()
 
-const START_TIME = Math.floor(Date.now() / 1000)
+const MAX_PROCESSED = 10000
+const GROUP_CACHE_TTL = 60000
 
-function getMessageContent(message) {
-    let msg = message
+// Diseño limpio de la consola
+function banner() {
+    console.clear()
 
-    while (msg) {
-        if (msg.ephemeralMessage?.message) {
-            msg = msg.ephemeralMessage.message
-            continue
-        }
-
-        if (msg.viewOnceMessage?.message) {
-            msg = msg.viewOnceMessage.message
-            continue
-        }
-
-        if (msg.viewOnceMessageV2?.message) {
-            msg = msg.viewOnceMessageV2.message
-            continue
-        }
-
-        if (msg.viewOnceMessageV2Extension?.message) {
-            msg = msg.viewOnceMessageV2Extension.message
-            continue
-        }
-
-        break
-    }
-
-    return msg || {}
+    console.log(chalk.cyanBright('EXCLUSIVE BOT'))
+    console.log(chalk.gray('Bot de WhatsApp'))
+    console.log('')
+    console.log(chalk.green('Estado: ') + chalk.white('Iniciando'))
+    console.log(chalk.green('Prefijo: ') + chalk.white(PREFIX))
+    console.log(chalk.green('Modo: ') + chalk.white('Solo comandos'))
+    console.log('')
 }
 
-function getText(m) {
-    const msg = getMessageContent(m.message)
+// Mostrar los comandos ejecutados
+function logCommand({ command, user, chatName, isGroup, fromMe }) {
+    const time = new Date().toLocaleTimeString('es-MX', {
+        hour12: false
+    })
+
+    console.log(
+        chalk.gray(`[${time}] `) +
+        chalk.green('COMANDO ') +
+        chalk.yellow(command)
+    )
+
+    console.log(
+        chalk.gray('Usuario: ') +
+        chalk.white(user)
+    )
+
+    console.log(
+        chalk.gray(isGroup ? 'Grupo: ' : 'Chat: ') +
+        chalk.cyan(chatName)
+    )
+
+    if (fromMe) {
+        console.log(
+            chalk.magenta('Ejecutado desde la cuenta del bot')
+        )
+    }
+
+    console.log('')
+}
+
+// Obtener el contenido real del mensaje
+function getContent(message) {
+    let content = message?.message
+    if (!content) return null
+
+    for (let i = 0; i < 6; i++) {
+        const key = Object.keys(content).find(k =>
+            [
+                'ephemeralMessage',
+                'viewOnceMessage',
+                'viewOnceMessageV2',
+                'documentWithCaptionMessage'
+            ].includes(k)
+        )
+
+        if (!key || !content[key]?.message) break
+        content = content[key].message
+    }
+
+    return content
+}
+
+// Extraer el texto del mensaje
+function getText(message) {
+    const content = getContent(message)
+    if (!content) return ''
 
     return (
-        msg.conversation ||
-        msg.extendedTextMessage?.text ||
-        msg.imageMessage?.caption ||
-        msg.videoMessage?.caption ||
-        msg.documentMessage?.caption ||
-        msg.documentWithCaptionMessage?.message?.documentMessage?.caption ||
-        msg.buttonsResponseMessage?.selectedButtonId ||
-        msg.listResponseMessage?.singleSelectReply?.selectedRowId ||
-        msg.templateButtonReplyMessage?.selectedId ||
-        msg.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson ||
+        content.conversation ||
+        content.extendedTextMessage?.text ||
+        content.imageMessage?.caption ||
+        content.videoMessage?.caption ||
+        content.documentMessage?.caption ||
+        content.buttonsResponseMessage?.selectedButtonId ||
+        content.listResponseMessage?.singleSelectReply?.selectedRowId ||
+        content.templateButtonReplyMessage?.selectedId ||
         ''
     ).trim()
 }
 
+// Limpiar identificadores de WhatsApp
 function cleanJid(jid = '') {
     return jid.replace(/:\d+@/, '@').trim()
 }
 
+// Obtener el nombre del usuario
+function getUserName(message) {
+    const sender =
+        message.key?.participant ||
+        message.key?.remoteJid ||
+        ''
+
+    return (
+        message.pushName ||
+        cleanJid(sender).split('@')[0] ||
+        'Usuario desconocido'
+    )
+}
+
+// Comprobar si el chat es un grupo
+function isGroupJid(jid = '') {
+    return jid.endsWith('@g.us')
+}
+
+// Evitar procesar el mismo mensaje dos veces
+function rememberMessage(id) {
+    if (!id || processedMessages.has(id)) return false
+
+    processedMessages.add(id)
+
+    if (processedMessages.size > MAX_PROCESSED) {
+        const first = processedMessages.values().next().value
+        processedMessages.delete(first)
+    }
+
+    return true
+}
+
+// Cargar los plugins
 async function loadPlugins() {
     commands.clear()
 
@@ -81,141 +153,161 @@ async function loadPlugins() {
     const files = fs.readdirSync(PLUGINS_DIR)
         .filter(file => file.endsWith('.js'))
 
+    let loaded = 0
+
     for (const file of files) {
+        const filePath = path.join(PLUGINS_DIR, file)
+
         try {
-            const fileUrl = pathToFileURL(
-                path.join(PLUGINS_DIR, file)
-            ).href
+            const url = pathToFileURL(filePath)
+            url.searchParams.set('update', Date.now().toString())
 
-            const imported = await import(
-                `${fileUrl}?update=${Date.now()}`
-            )
-
+            const imported = await import(url.href)
             const handler = imported.default
 
             if (!handler || typeof handler.run !== 'function') {
-                console.log(chalk.yellow(`⚠️ Plugin ignorado: ${file}`))
+                console.log(
+                    chalk.yellow(`Plugin omitido: ${file}`)
+                )
                 continue
             }
 
             const names = Array.isArray(handler.command)
                 ? handler.command
-                : [handler.command].filter(Boolean)
+                : [handler.command]
 
             for (const name of names) {
+                if (!name) continue
                 commands.set(String(name).toLowerCase(), handler)
             }
 
-            console.log(chalk.green(`✅ Plugin cargado: ${file}`))
+            loaded++
         } catch (error) {
-            console.error(
-                chalk.red(`❌ Error cargando ${file}:`),
-                error.message
+            console.log(
+                chalk.red(`Error cargando ${file}: ${error.message}`)
             )
         }
     }
 
-    console.log(
-        chalk.cyan(`📦 Comandos registrados: ${commands.size}`)
-    )
+    console.log(chalk.green(`Plugins cargados: ${loaded}`))
+    console.log(chalk.green(`Comandos registrados: ${commands.size}`))
+    console.log('')
 }
 
-async function processMessage(sock, m) {
+// Obtener los datos del grupo
+async function getGroupMetadata(sock, jid) {
+    const cached = groupCache.get(jid)
+
+    if (cached && Date.now() - cached.time < GROUP_CACHE_TTL) {
+        return cached.metadata
+    }
+
     try {
-        if (!m?.message || !m?.key?.remoteJid) return
-        if (!m.messageTimestamp) return
+        const metadata = await sock.groupMetadata(jid)
 
-        if (Number(m.messageTimestamp) < START_TIME) return
+        groupCache.set(jid, {
+            metadata,
+            time: Date.now()
+        })
 
-        if (m.key.fromMe && !config.ALLOW_SELF) return
+        return metadata
+    } catch {
+        return null
+    }
+}
 
-        const chat = m.key.remoteJid
+// Procesar cada mensaje
+async function processMessage(sock, message) {
+    if (!message?.key || !message.message) return
 
-        if (
-            chat === 'status@broadcast' ||
-            chat.endsWith('@broadcast')
-        ) return
+    const chat = message.key.remoteJid
+    if (!chat) return
 
-        const messageId = m.key.id
-        if (!messageId) return
+    if (
+        chat === 'status@broadcast' ||
+        chat.endsWith('@broadcast')
+    ) return
 
-        const uniqueId = `${chat}:${messageId}`
+    const timestamp = Number(message.messageTimestamp || 0)
 
-        if (processedMessages.has(uniqueId)) return
+    if (!timestamp || timestamp < START_TIME) return
 
-        processedMessages.add(uniqueId)
+    if (!rememberMessage(message.key.id)) return
 
-        if (processedMessages.size > 5000) {
-            const oldest = processedMessages.values().next().value
-            processedMessages.delete(oldest)
-        }
+    const text = getText(message)
 
-        const body = getText(m)
+    // Ignorar mensajes normales
+    if (!text || !text.startsWith(PREFIX)) return
 
-        if (!body || !body.startsWith(config.PREFIX)) return
+    const body = text.slice(PREFIX.length).trim()
+    if (!body) return
 
-        const input = body.slice(config.PREFIX.length).trim()
-        if (!input) return
+    const parts = body.split(/\s+/)
+    const command = parts.shift().toLowerCase()
+    const args = parts
 
-        const parts = input.split(/\s+/)
-        const commandName = parts.shift().toLowerCase()
-        const args = parts
+    const handler = commands.get(command)
+    if (!handler) return
 
-        const handler = commands.get(commandName)
-        if (!handler) return
+    const isGroup = isGroupJid(chat)
+    const sender =
+        message.key.participant ||
+        message.key.remoteJid
 
-        let groupMetadata = null
+    let metadata = null
+    let chatName = 'Chat privado'
 
-        if (chat.endsWith('@g.us')) {
-            const cached = groupCache.get(chat)
+    if (isGroup) {
+        metadata = await getGroupMetadata(sock, chat)
+        chatName = metadata?.subject || 'Grupo sin nombre'
+    } else {
+        chatName = getUserName(message)
+    }
 
-            if (cached && Date.now() - cached.time < 60000) {
-                groupMetadata = cached.data
-            } else {
-                try {
-                    groupMetadata = await sock.groupMetadata(chat)
+    const user = getUserName(message)
 
-                    groupCache.set(chat, {
-                        data: groupMetadata,
-                        time: Date.now()
-                    })
-                } catch {
-                    groupMetadata = null
-                }
-            }
-        }
+    const context = {
+        isGroup,
+        metadata,
+        groupMetadata: metadata,
+        sender,
+        chat,
+        fromMe: Boolean(message.key.fromMe),
+        prefix: PREFIX,
+        command
+    }
 
-        const context = {
-            commands,
-            groupMetadata,
-            isGroup: chat.endsWith('@g.us'),
-            cleanJid,
-            config
-        }
+    logCommand({
+        command: PREFIX + command,
+        user,
+        chatName,
+        isGroup,
+        fromMe: Boolean(message.key.fromMe)
+    })
 
-        console.log(
-            chalk.gray(`[principal] ${config.PREFIX}${commandName} | ${chat}`)
-        )
-
-        await handler.run(sock, m, args, context)
+    // Ejecutar sin bloquear los siguientes comandos
+    try {
+        await handler.run(sock, message, args, context)
     } catch (error) {
-        console.error(
-            chalk.red('❌ Error procesando mensaje:'),
-            error?.stack || error
+        console.log(
+            chalk.red(
+                `Error en ${PREFIX}${command}: ${error.message}`
+            )
         )
     }
 }
 
+// Conectar los eventos del bot
 function attachSocket(sock) {
-    if (!sock || attachedSockets.has(sock)) return
-
-    attachedSockets.add(sock)
-
-    sock.ev.on('messages.upsert', ({ messages, type }) => {
-        if (type !== 'notify' && type !== 'append') return
-
-        for (const m of messages || []) {
-            void processMessage(sock, m)
+    sock.ev.on('messages.upsert', ({ messages }) => {
+        for (const message of messages || []) {
+            void processMessage(sock, message).catch(error => {
+                console.log(
+                    chalk.red(
+                        `Error procesando mensaje: ${error.message}`
+                    )
+                )
+            })
         }
     })
 
@@ -228,37 +320,34 @@ function attachSocket(sock) {
     sock.ev.on('group-participants.update', update => {
         if (update.id) groupCache.delete(update.id)
     })
-
-    console.log(chalk.green('✅ Listener de mensajes activado'))
 }
 
+// Iniciar el bot
 async function start() {
-    console.log(chalk.cyan('🚀 Iniciando EXCLUSIVE BOT...'))
-
+    banner()
     await loadPlugins()
 
-    await connect(attachSocket)
+    console.log(chalk.cyan('Conectando EXCLUSIVE BOT...'))
+    console.log('')
 
-    console.log(chalk.green('✅ EXCLUSIVE BOT iniciado con una sola cuenta'))
+    await connect(attachSocket)
 }
 
+// Capturar errores no controlados
 process.on('unhandledRejection', error => {
-    console.error(
-        chalk.red('❌ Promesa rechazada:'),
-        error?.stack || error
+    console.log(
+        chalk.red(`Error no controlado: ${error?.message || error}`)
     )
 })
 
 process.on('uncaughtException', error => {
-    console.error(
-        chalk.red('❌ Error inesperado:'),
-        error?.stack || error
+    console.log(
+        chalk.red(`Error crítico: ${error?.message || error}`)
     )
 })
 
 start().catch(error => {
-    console.error(
-        chalk.red('❌ No se pudo iniciar el bot:'),
-        error?.stack || error
+    console.log(
+        chalk.red(`No se pudo iniciar el bot: ${error.message}`)
     )
 })
