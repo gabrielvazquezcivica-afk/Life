@@ -50,7 +50,13 @@ const handler = {
             return sock.sendMessage(
                 chat,
                 {
-                    text: 'Número no válido. Usa .code +52 123 456 7890'
+                    text: '📱 *Número no válido*\n\n' +
+                        'Ejemplos:\n' +
+                        '• .code +52 123 456 7890\n' +
+                        '• .code 52-123-456-7890\n' +
+                        '• .code (52) 123.456.7890\n' +
+                        '• .code 00521234567890\n\n' +
+                        'Incluye el código de país.'
                 },
                 { quoted: m }
             )
