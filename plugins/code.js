@@ -6,7 +6,6 @@ const NUMERO_BOT_AUTORIZADO = '12514487515'
 function limpiarNumero(numero) {
     let limpio = String(numero || '').replace(/\D/g, '')
 
-    // Eliminar el prefijo internacional 00
     if (limpio.startsWith('00')) {
         limpio = limpio.slice(2)
     }
@@ -37,76 +36,50 @@ const handler = {
         if (!esBotAutorizado(sock)) return
 
         const chat = m.key.remoteJid
-
-        // Aceptar números con espacios, símbolos y guiones.
         const numero = limpiarNumero(args.join(''))
+
+        // Reaccionar al mensaje original del comando.
+        await sock.sendMessage(chat, {
+            react: {
+                text: '⏳',
+                key: m.key
+            }
+        })
 
         if (numero.length < 8 || numero.length > 15) {
             return sock.sendMessage(
                 chat,
                 {
-                    text:
-                        '📱 *Número no válido*\n\n' +
-                        'Ejemplos:\n' +
-                        '• .code +52 123 456 7890\n' +
-                        '• .code 52-123-456-7890\n' +
-                        '• .code (52) 123.456.7890\n' +
-                        '• .code 00521234567890\n\n' +
-                        'Incluye el código de país.'
+                    text: 'Número no válido. Usa .code +52 123 456 7890'
                 },
                 { quoted: m }
             )
         }
 
-        // Primer mensaje: aviso.
-        const aviso = await sock.sendMessage(
+        // Aviso por separado.
+        await sock.sendMessage(
             chat,
             {
-                text:
-                    '⏳ *Preparando código de vinculación...*\n\n' +
-                    `📱 Número: ${numero}\n` +
-                    'Espera un momento.'
+                text: '⏳ Preparando código...'
             },
             { quoted: m }
         )
 
-        await sock.sendMessage(chat, {
-            react: {
-                text: '⏳',
-                key: aviso.key
-            }
-        })
-
         try {
-            // Generar el código sin enviarlo desde connection.js.
             const resultado = await connectAdditional(numero)
 
-            // Segundo mensaje: código separado.
-            const mensajeCodigo = await sock.sendMessage(chat, {
-                text:
-                    '🔑 *CÓDIGO DE VINCULACIÓN*\n\n' +
-                    `📱 Número: ${numero}\n` +
-                    `🔐 Código: *${resultado.code}*\n\n` +
-                    'Introduce el código en WhatsApp del teléfono ' +
-                    'que quieres vincular.'
-            })
-
-            // Reaccionar al mensaje del código.
+            // Enviar exclusivamente el código, sin texto adicional.
             await sock.sendMessage(chat, {
-                react: {
-                    text: '🔑',
-                    key: mensajeCodigo.key
-                }
+                text: String(resultado.code).replace(/\s+/g, '')
             })
 
         } catch (error) {
             await sock.sendMessage(
                 chat,
                 {
-                    text:
-                        '❌ *Error al generar el código*\n\n' +
-                        `${error.message || 'Inténtalo de nuevo.'}`
-                }
+                    text: `❌ Error: ${error.message || 'No se pudo generar el código.'}`
+                },
+                { quoted: m }
             )
         }
     }
