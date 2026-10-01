@@ -246,8 +246,9 @@ async function processMessage(sock, m) {
     try {
         if (!m?.message || !m.key?.remoteJid) return
 
-        // No procesar mensajes propios.
-        if (m.key.fromMe) return
+        const esPropio = m.key.fromMe === true
+
+if (esPropio && !config.ALLOW_SELF) return
 
         const jid = m.key.remoteJid
 
