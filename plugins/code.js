@@ -1,84 +1,93 @@
 
-import config from '../config.js'
 import { connectAdditional } from '../lib/connection.js'
 
-// 🧹 LIMPIAR NÚMERO
+const NUMERO_BOT_AUTORIZADO = '12514487515'
+
 function limpiarNumero(numero) {
-    return String(numero || '').replace(/\D/g, '')
+    return String(numero || '')
+        .split('@')[0]
+        .split(':')[0]
+        .replace(/\D/g, '')
+}
+
+function esBotAutorizado(sock) {
+    const identificador = sock.user?.id || ''
+    const numero = limpiarNumero(identificador)
+
+    return (
+        numero === NUMERO_BOT_AUTORIZADO ||
+        numero === `1${NUMERO_BOT_AUTORIZADO}`
+    )
 }
 
 const handler = {
     command: ['code'],
     help: ['code <numero>'],
-    tags: ['owner'],
+    tags: ['herramientas'],
     menu: true,
 
     run: async (sock, m, args) => {
+        // Los demás bots no responden.
+        if (!esBotAutorizado(sock)) return
+
         const chat = m.key.remoteJid
+        const numero = args.join('').replace(/\D/g, '')
 
-        // 🔐 VERIFICAR PROPIETARIO
-        const ownerNumbers = (config.owner || [])
-            .filter(Boolean)
-            .map(limpiarNumero)
-
-        const ownerLids = (config.ownerLid || [])
-            .filter(Boolean)
-            .map(limpiarNumero)
-
-        const senderJid = String(
-            m.key.participant || m.key.remoteJid || ''
-        )
-
-        const senderDigits = limpiarNumero(
-            senderJid.split('@')[0].split(':')[0]
-        )
-
-        const isOwner =
-            (
-                senderJid.endsWith('@s.whatsapp.net') &&
-                ownerNumbers.includes(senderDigits)
-            ) ||
-            (
-                senderJid.endsWith('@lid') &&
-                ownerLids.includes(senderDigits)
+        if (!numero || numero.length < 8 || numero.length > 15) {
+            return sock.sendMessage(
+                chat,
+                {
+                    text: '📱 Usa el comando así:\n.code 521XXXXXXXXXX\n\nIncluye el código de país.'
+                },
+                { quoted: m }
             )
-
-        if (!isOwner) {
-            return sock.sendMessage(chat, {
-                text: '⛔ Este comando solo puede usarlo el propietario.'
-            }, { quoted: m })
         }
 
-        // 📱 LIMPIAR NÚMERO
-        const number = limpiarNumero(args.join(''))
+        // Primer mensaje: aviso.
+        const aviso = await sock.sendMessage(
+            chat,
+            {
+                text: '⏳ Preparando el código de vinculación...\n\nEspera un momento.'
+            },
+            { quoted: m }
+        )
 
-        if (number.length < 8 || number.length > 15) {
-            return sock.sendMessage(chat, {
-                text:
-                    '📱 *EXCLUSIVE BOT — VINCULAR NÚMERO*\n\n' +
-                    'Escribe el número con código de país.\n\n' +
-                    '*Ejemplos:*\n' +
-                    '• `.code +52 123 456 7890`\n' +
-                    '• `.code +52 (123) 456-7890`\n' +
-                    '• `.code 521234567890`\n\n' +
-                    'El número se limpiará automáticamente.'
-            }, { quoted: m })
-        }
-
-        // ⏳ AVISAR
         await sock.sendMessage(chat, {
-            text:
-                '🔐 *EXCLUSIVE BOT — VINCULACIÓN*\n\n' +
-                `📱 Número limpio: ${number}\n` +
-                '⏳ Generando código de vinculación...'
-        }, { quoted: m })
+            react: {
+                text: '⏳',
+                key: aviso.key
+            }
+        })
 
         try {
-            await connectAdditional(number, sock, chat)
-        } catch (error) {
+            const resultado = await connectAdditional(numero)
+
+            // Segundo mensaje: código separado.
+            const mensajeCodigo = await sock.sendMessage(
+                chat,
+                {
+                    text:
+                        `🔑 *CÓDIGO DE VINCULACIÓN*\n\n` +
+                        `📱 Número: ${numero}\n` +
+                        `🔐 Código: *${resultado.code}*\n\n` +
+                        `Ingresa el código en el teléfono que quieres vincular.`
+                }
+            )
+
+            // Reacción al mensaje que contiene el código.
             await sock.sendMessage(chat, {
-                text: `❌ Error: ${error.message}`
-            }, { quoted: m })
+                react: {
+                    text: '🔑',
+                    key: mensajeCodigo.key
+                }
+            })
+        } catch (error) {
+            await sock.sendMessage(
+                chat,
+                {
+                    text: `❌ No se pudo generar el código.\n\n${error.message}`
+                }
+            )
         }
     }
 }
