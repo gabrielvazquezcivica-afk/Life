@@ -1,10 +1,10 @@
 
-import { connect, connectedSockets } from './lib/connection.js'
+import { connect } from './lib/connection.js'
 import config from './config.js'
 
 import fs from 'fs'
 import path from 'path'
-import { fileURLToPath } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
 import chalk from 'chalk'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -83,8 +83,9 @@ async function loadPlugins() {
 
     for (const file of files) {
         try {
-            const filePath = path.join(PLUGINS_DIR, file)
-            const fileUrl = `file://${filePath.replace(/\\/g, '/')}`
+            const fileUrl = pathToFileURL(
+                path.join(PLUGINS_DIR, file)
+            ).href
 
             const imported = await import(
                 `${fileUrl}?update=${Date.now()}`
@@ -122,11 +123,9 @@ async function loadPlugins() {
 async function processMessage(sock, m) {
     try {
         if (!m?.message || !m?.key?.remoteJid) return
-
         if (!m.messageTimestamp) return
 
-        const timestamp = Number(m.messageTimestamp)
-        if (timestamp < START_TIME) return
+        if (Number(m.messageTimestamp) < START_TIME) return
 
         if (m.key.fromMe && !config.ALLOW_SELF) return
 
@@ -140,8 +139,7 @@ async function processMessage(sock, m) {
         const messageId = m.key.id
         if (!messageId) return
 
-        const sessionId = sock.sessionId || 'principal'
-        const uniqueId = `${sessionId}:${chat}:${messageId}`
+        const uniqueId = `${chat}:${messageId}`
 
         if (processedMessages.has(uniqueId)) return
 
@@ -169,7 +167,7 @@ async function processMessage(sock, m) {
         let groupMetadata = null
 
         if (chat.endsWith('@g.us')) {
-            const cached = groupCache.get(`${sessionId}:${chat}`)
+            const cached = groupCache.get(chat)
 
             if (cached && Date.now() - cached.time < 60000) {
                 groupMetadata = cached.data
@@ -177,7 +175,7 @@ async function processMessage(sock, m) {
                 try {
                     groupMetadata = await sock.groupMetadata(chat)
 
-                    groupCache.set(`${sessionId}:${chat}`, {
+                    groupCache.set(chat, {
                         data: groupMetadata,
                         time: Date.now()
                     })
@@ -192,18 +190,17 @@ async function processMessage(sock, m) {
             groupMetadata,
             isGroup: chat.endsWith('@g.us'),
             cleanJid,
-            config,
-            sessionId
+            config
         }
 
         console.log(
-            chalk.gray(`[${sessionId}] ${config.PREFIX}${commandName} | ${chat}`)
+            chalk.gray(`[principal] ${config.PREFIX}${commandName} | ${chat}`)
         )
 
         await handler.run(sock, m, args, context)
     } catch (error) {
         console.error(
-            chalk.red(`[${sock.sessionId || 'principal'}] Error procesando mensaje:`),
+            chalk.red('❌ Error procesando mensaje:'),
             error?.stack || error
         )
     }
@@ -224,21 +221,15 @@ function attachSocket(sock) {
 
     sock.ev.on('groups.update', updates => {
         for (const update of updates || []) {
-            if (update.id) {
-                groupCache.delete(`${sock.sessionId}:${update.id}`)
-            }
+            if (update.id) groupCache.delete(update.id)
         }
     })
 
     sock.ev.on('group-participants.update', update => {
-        if (update.id) {
-            groupCache.delete(`${sock.sessionId}:${update.id}`)
-        }
+        if (update.id) groupCache.delete(update.id)
     })
 
-    console.log(
-        chalk.green(`✅ Escuchando mensajes: ${sock.sessionId || 'principal'}`)
-    )
+    console.log(chalk.green('✅ Listener de mensajes activado'))
 }
 
 async function start() {
@@ -246,26 +237,9 @@ async function start() {
 
     await loadPlugins()
 
-    // connect() inicia las sesiones guardadas y devuelve un socket inicial.
-    const firstSocket = await connect()
+    await connect(attachSocket)
 
-    if (firstSocket) {
-        attachSocket(firstSocket)
-    }
-
-    // Registrar todas las sesiones creadas durante el inicio.
-    for (const sock of connectedSockets.values()) {
-        attachSocket(sock)
-    }
-
-    // Detectar nuevas sesiones y reconexiones.
-    setInterval(() => {
-        for (const sock of connectedSockets.values()) {
-            attachSocket(sock)
-        }
-    }, 1000)
-
-    console.log(chalk.green('✅ Sistema multi-sesión iniciado'))
+    console.log(chalk.green('✅ EXCLUSIVE BOT iniciado con una sola cuenta'))
 }
 
 process.on('unhandledRejection', error => {
