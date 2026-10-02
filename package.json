@@ -1,8 +1,7 @@
-
 {
   "name": "exclusive-bot",
   "version": "1.0.0",
-  "description": "EXCLUSIVE - WhatsApp Multi-Session Bot",
+  "description": "Exclusive WhatsApp Bot",
   "type": "module",
   "main": "index.js",
   "scripts": {
