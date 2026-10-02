@@ -1,3 +1,4 @@
+
 import { connect } from './lib/connection.js'
 import config from './config.js'
 
@@ -75,13 +76,11 @@ async function loadPlugins() {
 
             for (const name of names) {
                 if (typeof name !== 'string') continue
+
                 commands.set(name.toLowerCase(), handler)
             }
 
-            console.log(
-                chalk.green('  ✔ '),
-                chalk.white(file)
-            )
+            console.log(chalk.green('  ✔ '), chalk.white(file))
         } catch (error) {
             console.log(
                 chalk.red(`  ✖ ${file}: ${error.stack || error.message}`)
@@ -102,7 +101,7 @@ async function loadPlugins() {
     )
 }
 
-// Extraer texto
+// Extraer texto del mensaje
 function getText(m) {
     const msg = m.message
     if (!msg) return ''
@@ -165,7 +164,7 @@ function getSenderName(m) {
     return m.pushName || m.key.participant || m.key.remoteJid
 }
 
-// Registro de comandos
+// Registro de comandos ejecutados
 function logCommand({ user, group, command, elapsed, fromMe }) {
     const time = new Date().toLocaleTimeString('es-MX', {
         hour12: false
@@ -202,7 +201,7 @@ function logCommand({ user, group, command, elapsed, fromMe }) {
     console.log(chalk.gray('└──────────────────────────────────────────────\n'))
 }
 
-// Evitar mensajes duplicados
+// Evitar procesar dos veces el mismo mensaje
 function rememberMessage(uniqueId) {
     if (processedMessages.has(uniqueId)) return false
 
@@ -210,7 +209,10 @@ function rememberMessage(uniqueId) {
 
     if (processedMessages.size > MAX_PROCESSED_MESSAGES) {
         const oldest = processedMessages.values().next().value
-        if (oldest !== undefined) processedMessages.delete(oldest)
+
+        if (oldest !== undefined) {
+            processedMessages.delete(oldest)
+        }
     }
 
     return true
@@ -225,8 +227,6 @@ async function processMessage(sock, m) {
 
         if (jid === 'status@broadcast') return
 
-        // Ya no se descartan mensajes por su timestamp.
-
         const text = getText(m)
 
         if (!text || !text.startsWith(PREFIX)) return
@@ -238,28 +238,13 @@ async function processMessage(sock, m) {
         const commandName = parts.shift().toLowerCase()
         const args = parts
 
-        // Diagnóstico temporal de kickall
-        if (commandName === 'kickall') {
-            console.log(chalk.yellow('[DEBUG KICKALL]'), {
-                texto: text,
-                comando: commandName,
-                encontrado: commands.has(commandName),
-                grupo: jid.endsWith('@g.us'),
-                fromMe: Boolean(m.key.fromMe)
-            })
-        }
-
         const id = m.key.id
 
         if (id && !rememberMessage(`${jid}:${id}`)) return
 
         const handler = commands.get(commandName)
-        if (!handler) {
-            if (commandName === 'kickall') {
-                console.log(chalk.red('[KICKALL] Comando no registrado'))
-            }
-            return
-        }
+
+        if (!handler) return
 
         const start = performance.now()
         const groupPromise = getGroupName(sock, jid)
@@ -296,9 +281,22 @@ async function startBot() {
 
     await connect(sock => {
         sock.ev.on('messages.upsert', ({ messages, type }) => {
+            // Diagnóstico temporal de recepción
+            console.log('[MENSAJES RECIBIDOS]', {
+                tipo: type,
+                cantidad: messages?.length || 0
+            })
+
             if (type !== 'notify' && type !== 'append') return
 
-            for (const m of messages) {
+            for (const m of messages || []) {
+                console.log('[MENSAJE]', {
+                    id: m.key?.id,
+                    chat: m.key?.remoteJid,
+                    descifrado: Boolean(m.message),
+                    desdeBot: Boolean(m.key?.fromMe)
+                })
+
                 void processMessage(sock, m)
             }
         })
@@ -314,5 +312,6 @@ startBot().catch(error => {
         chalk.red('[ERROR FATAL]'),
         error.stack || error.message
     )
+
     process.exitCode = 1
 })
