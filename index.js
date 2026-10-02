@@ -18,13 +18,12 @@ const START_TIME = Math.floor(Date.now() / 1000)
 const commands = new Map()
 const processedMessages = new Set()
 const groupCache = new Map()
-
-// Evitar que el caché de grupos crezca indefinidamente.
-const MAX_PROCESSED_MESSAGES = 5000
-const GROUP_CACHE_TTL = 10 * 60 * 1000
 const groupCacheTime = new Map()
 
-// Banner de Exclusive
+const MAX_PROCESSED_MESSAGES = 5000
+const GROUP_CACHE_TTL = 10 * 60 * 1000
+
+// Banner
 function banner() {
     console.clear()
 
@@ -79,24 +78,13 @@ async function loadPlugins() {
 
             for (const name of names) {
                 if (typeof name !== 'string') continue
-
-                const commandName = name.toLowerCase()
-
-                if (commands.has(commandName)) {
-                    console.log(
-                        chalk.yellow(
-                            `  ⚠ Comando duplicado: ${commandName} (${file})`
-                        )
-                    )
-                }
-
-                commands.set(commandName, handler)
+                commands.set(name.toLowerCase(), handler)
             }
 
             console.log(chalk.green('  ✔ '), chalk.white(file))
         } catch (error) {
             console.log(
-                chalk.red(`  ✖ ${file}: ${error.stack || error.message}`)
+                chalk.red(`  ✖ ${file}: ${error.message}`)
             )
         }
     }
@@ -109,7 +97,7 @@ async function loadPlugins() {
     )
 }
 
-// Extraer texto del mensaje
+// Obtener texto
 function getText(m) {
     const msg = m.message
 
@@ -136,7 +124,7 @@ function getText(m) {
     ).trim()
 }
 
-// Convertir timestamp de Baileys a segundos
+// Timestamp de Baileys
 function getTimestampSeconds(timestamp) {
     if (timestamp == null) return 0
 
@@ -151,15 +139,12 @@ function getTimestampSeconds(timestamp) {
     }
 
     const value = Number(timestamp)
-
     return Number.isFinite(value) ? value : 0
 }
 
 // Nombre del grupo
 async function getGroupName(sock, jid) {
-    if (!jid.endsWith('@g.us')) {
-        return 'Chat privado'
-    }
+    if (!jid.endsWith('@g.us')) return 'Chat privado'
 
     const now = Date.now()
     const cachedAt = groupCacheTime.get(jid)
@@ -191,15 +176,10 @@ function getSenderName(m) {
         return config.BOT_NAME || 'Exclusive'
     }
 
-    return (
-        m.pushName ||
-        m.key.participant ||
-        m.key.remoteJid ||
-        'Usuario desconocido'
-    )
+    return m.pushName || m.key.participant || m.key.remoteJid
 }
 
-// Registrar comandos en consola
+// Log de comandos
 function logCommand({ user, group, command, elapsed, fromMe }) {
     const time = new Date().toLocaleTimeString('es-MX', {
         hour12: false
@@ -236,11 +216,9 @@ function logCommand({ user, group, command, elapsed, fromMe }) {
     console.log(chalk.gray('└──────────────────────────────────────────────\n'))
 }
 
-// Limitar el registro de mensajes procesados
+// Evitar mensajes duplicados
 function rememberMessage(uniqueId) {
-    if (processedMessages.has(uniqueId)) {
-        return false
-    }
+    if (processedMessages.has(uniqueId)) return false
 
     processedMessages.add(uniqueId)
 
@@ -255,7 +233,7 @@ function rememberMessage(uniqueId) {
     return true
 }
 
-// Procesar cada mensaje de forma independiente
+// Procesar comandos
 async function processMessage(sock, m) {
     try {
         if (!m?.message || !m.key?.remoteJid) return
@@ -264,55 +242,32 @@ async function processMessage(sock, m) {
 
         if (jid === 'status@broadcast') return
 
-        const id = m.key.id
-
-        if (id) {
-            const uniqueId = `${jid}:${id}`
-
-            if (!rememberMessage(uniqueId)) {
-                return
-            }
-        }
-
         const timestamp = getTimestampSeconds(m.messageTimestamp)
 
-        // Ignorar mensajes anteriores al inicio cuando tienen timestamp válido.
-        if (timestamp > 0 && timestamp < START_TIME) {
-            return
-        }
+        if (timestamp > 0 && timestamp < START_TIME) return
 
         const text = getText(m)
 
-        if (!text) return
-
-        // Solo procesar mensajes que comiencen con el prefijo.
-        if (!text.startsWith(PREFIX)) return
+        // Ignorar mensajes normales sin prefijo.
+        if (!text || !text.startsWith(PREFIX)) return
 
         const body = text.slice(PREFIX.length).trim()
-
         if (!body) return
+
+        const id = m.key.id
+
+        if (id && !rememberMessage(`${jid}:${id}`)) return
 
         const parts = body.split(/\s+/)
         const commandName = parts.shift().toLowerCase()
         const args = parts
 
         const handler = commands.get(commandName)
-
-        if (!handler) {
-            console.log(
-                chalk.yellow('[COMANDO NO ENCONTRADO]'),
-                chalk.white(text),
-                chalk.gray(`| Chat: ${jid}`)
-            )
-            return
-        }
+        if (!handler) return
 
         const start = performance.now()
-
-        // Obtener el grupo en paralelo con la ejecución del comando.
         const groupPromise = getGroupName(sock, jid)
 
-        // No usar await en el bucle de mensajes permite concurrencia.
         await handler.run(sock, m, args)
 
         const elapsed = Math.round(performance.now() - start)
@@ -346,17 +301,9 @@ async function startBot() {
     const sock = await connect()
 
     sock.ev.on('messages.upsert', ({ messages, type }) => {
-        console.log(
-            chalk.gray(`[MENSAJES] Tipo: ${type} | Cantidad: ${messages.length}`)
-        )
-
-        if (type !== 'notify' && type !== 'append') {
-            return
-        }
+        if (type !== 'notify' && type !== 'append') return
 
         for (const m of messages) {
-            // Cada mensaje se procesa de manera independiente.
-            // No bloquear el bucle esperando a que termine el comando.
             void processMessage(sock, m)
         }
     })
@@ -366,7 +313,7 @@ async function startBot() {
     )
 }
 
-// Manejar errores de inicio
+// Errores de inicio
 startBot().catch(error => {
     console.error(
         chalk.red('[ERROR FATAL]'),
