@@ -1,6 +1,5 @@
 import { connect } from './lib/connection.js'
 import config from './config.js'
-
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
@@ -10,407 +9,313 @@ import { performance } from 'perf_hooks'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-const PLUGINS_DIR = path.join(__dirname, 'plugins')
-const PREFIX = config.PREFIX || '.'
+let commands = new Map()
+let reconnecting = false
 
-const commands = new Map()
+const STICKERS_FILE = path.join(__dirname, 'data', 'stickers.json')
 const processedMessages = new Set()
-const groupCache = new Map()
-const groupCacheTime = new Map()
 
-const MAX_PROCESSED_MESSAGES = 5000
-const GROUP_CACHE_TTL = 10 * 60 * 1000
-
+// Mostrar el banner
 function banner() {
-    console.clear()
-
-    console.log(chalk.hex('#B388FF').bold(`
-╔══════════════════════════════════════════════╗
-║                                              ║
-║              E X C L U S I V E               ║
-║                                              ║
-║               WHATSAPP BOT                   ║
-║                                              ║
-╚══════════════════════════════════════════════╝
-`))
-
-    console.log(
-        chalk.gray('  Plugins • Multitarea • Baileys\n')
-    )
+  console.clear()
+  console.log(chalk.cyan(`
+  ╔══════════════════════════════╗
+  ║          TIBU BOT            ║
+  ║       WhatsApp Bot           ║
+  ╚══════════════════════════════╝
+  `))
 }
 
-// Cargar plugins
+// Cargar los comandos
 async function loadPlugins() {
-    if (!fs.existsSync(PLUGINS_DIR)) {
-        fs.mkdirSync(PLUGINS_DIR, { recursive: true })
-    }
+  const pluginsDir = path.join(__dirname, 'plugins')
 
-    const files = fs.readdirSync(PLUGINS_DIR)
-        .filter(file => file.endsWith('.js'))
+  if (!fs.existsSync(pluginsDir)) {
+    fs.mkdirSync(pluginsDir, { recursive: true })
+  }
 
-    commands.clear()
+  commands.clear()
 
-    for (const file of files) {
-        try {
-            const filePath = pathToFileURL(
-                path.join(PLUGINS_DIR, file)
-            ).href
+  const files = fs.readdirSync(pluginsDir)
+    .filter(file => file.endsWith('.js'))
 
-            const module = await import(
-                `${filePath}?v=${Date.now()}`
-            )
-
-            const handler = module.default || module
-
-            if (typeof handler.run !== 'function') {
-                console.log(
-                    chalk.yellow(`  ⚠ ${file}: sin handler.run`)
-                )
-                continue
-            }
-
-            const names = handler.command
-                ? Array.isArray(handler.command)
-                    ? handler.command
-                    : [handler.command]
-                : [path.basename(file, '.js')]
-
-            for (const name of names) {
-                if (typeof name !== 'string') continue
-
-                commands.set(
-                    name.toLowerCase(),
-                    handler
-                )
-            }
-
-            console.log(
-                chalk.green('  ✔ '),
-                chalk.white(file)
-            )
-
-        } catch (error) {
-            console.log(
-                chalk.red(
-                    `  ✖ ${file}: ${error.stack || error.message}`
-                )
-            )
-        }
-    }
-
-    console.log(
-        '\n',
-        chalk.hex('#B388FF').bold('  COMANDOS CARGADOS: '),
-        chalk.white(commands.size),
-        '\n'
-    )
-
-    console.log(
-        chalk.cyan('  Comandos registrados:'),
-        [...commands.keys()].join(', ')
-    )
-}
-
-// Extraer texto
-function getText(m) {
-    const msg = m.message
-
-    if (!msg) return ''
-
-    const message =
-        msg.ephemeralMessage?.message ||
-        msg.viewOnceMessage?.message ||
-        msg.viewOnceMessageV2?.message ||
-        msg.documentWithCaptionMessage?.message ||
-        msg
-
-    return (
-        message.conversation ||
-        message.extendedTextMessage?.text ||
-        message.imageMessage?.caption ||
-        message.videoMessage?.caption ||
-        message.documentMessage?.caption ||
-        message.buttonsResponseMessage?.selectedButtonId ||
-        message.listResponseMessage?.singleSelectReply?.selectedRowId ||
-        message.templateButtonReplyMessage?.selectedId ||
-        message.interactiveResponseMessage?.body?.text ||
-        ''
-    ).trim()
-}
-
-// Obtener nombre del grupo
-async function getGroupName(sock, jid) {
-    if (!jid.endsWith('@g.us')) {
-        return 'Chat privado'
-    }
-
-    const now = Date.now()
-    const cachedAt = groupCacheTime.get(jid)
-
-    if (
-        groupCache.has(jid) &&
-        cachedAt &&
-        now - cachedAt < GROUP_CACHE_TTL
-    ) {
-        return groupCache.get(jid)
-    }
-
+  for (const file of files) {
     try {
-        const metadata = await sock.groupMetadata(jid)
-        const name = metadata.subject || 'Grupo sin nombre'
+      const filePath = path.join(pluginsDir, file)
+      const fileUrl = pathToFileURL(filePath).href
+      const imported = await import(`${fileUrl}?update=${Date.now()}`)
+      const handler = imported.default || imported.handler
 
-        groupCache.set(jid, name)
-        groupCacheTime.set(jid, now)
+      if (!handler || typeof handler.run !== 'function') {
+        console.log(chalk.yellow(`Plugin ignorado: ${file}`))
+        continue
+      }
 
-        return name
+      const names = Array.isArray(handler.command)
+        ? handler.command
+        : [handler.command]
 
-    } catch {
-        return groupCache.get(jid) || 'Grupo desconocido'
-    }
-}
+      for (const name of names) {
+        if (!name) continue
+        commands.set(String(name).toLowerCase(), handler)
+      }
 
-// Obtener nombre del usuario
-function getSenderName(m) {
-    if (m.key.fromMe) {
-        return config.BOT_NAME || 'Exclusive'
-    }
-
-    return (
-        m.pushName ||
-        m.key.participant ||
-        m.key.remoteJid
-    )
-}
-
-// Registro de comandos
-function logCommand({
-    user,
-    group,
-    command,
-    elapsed,
-    fromMe
-}) {
-    const time = new Date().toLocaleTimeString(
-        'es-MX',
-        {
-            hour12: false
-        }
-    )
-
-    console.log(
-        chalk.gray(
-            '┌──────────────────────────────────────────────'
-        )
-    )
-
-    console.log(
-        chalk.gray('│ '),
-        chalk.hex('#B388FF').bold('EXCLUSIVE'),
-        chalk.gray(' • '),
-        chalk.white(time)
-    )
-
-    console.log(
-        chalk.gray('│ '),
-        chalk.hex('#64B5F6')('Usuario: '),
-        chalk.white(user),
-        fromMe
-            ? chalk.magenta('(BOT)')
-            : ''
-    )
-
-    console.log(
-        chalk.gray('│ '),
-        chalk.hex('#64B5F6')('Grupo:   '),
-        chalk.white(group)
-    )
-
-    console.log(
-        chalk.gray('│ '),
-        chalk.hex('#64B5F6')('Comando: '),
-        chalk.hex('#81C784').bold(command)
-    )
-
-    console.log(
-        chalk.gray('│ '),
-        chalk.hex('#64B5F6')('Tiempo:  '),
-        chalk.white(`${elapsed} ms`)
-    )
-
-    console.log(
-        chalk.gray(
-            '└──────────────────────────────────────────────\n'
-        )
-    )
-}
-
-// Evitar mensajes duplicados
-function rememberMessage(uniqueId) {
-    if (processedMessages.has(uniqueId)) {
-        return false
-    }
-
-    processedMessages.add(uniqueId)
-
-    if (
-        processedMessages.size >
-        MAX_PROCESSED_MESSAGES
-    ) {
-        const oldest =
-            processedMessages.values().next().value
-
-        if (oldest !== undefined) {
-            processedMessages.delete(oldest)
-        }
-    }
-
-    return true
-}
-
-// Procesar comandos
-async function processMessage(sock, m) {
-    try {
-        if (
-            !m?.message ||
-            !m.key?.remoteJid
-        ) {
-            return
-        }
-
-        const jid = m.key.remoteJid
-
-        if (jid === 'status@broadcast') {
-            return
-        }
-
-        const text = getText(m)
-
-        if (
-            !text ||
-            !text.startsWith(PREFIX)
-        ) {
-            return
-        }
-
-        const body =
-            text
-                .slice(PREFIX.length)
-                .trim()
-
-        if (!body) return
-
-        const parts =
-            body.split(/\s+/)
-
-        const commandName =
-            parts.shift().toLowerCase()
-
-        const args = parts
-
-        const id = m.key.id
-
-        if (
-            id &&
-            !rememberMessage(
-                `${jid}:${id}`
-            )
-        ) {
-            return
-        }
-
-        const handler =
-            commands.get(commandName)
-
-        if (!handler) return
-
-        const start =
-            performance.now()
-
-        const groupPromise =
-            getGroupName(sock, jid)
-
-        await handler.run(
-            sock,
-            m,
-            args
-        )
-
-        const elapsed =
-            Math.round(
-                performance.now() -
-                start
-            )
-
-        const group =
-            await groupPromise
-
-        logCommand({
-            user: getSenderName(m),
-            group,
-            command:
-                `${PREFIX}${commandName}`,
-            elapsed,
-            fromMe:
-                Boolean(m.key.fromMe)
-        })
-
+      console.log(chalk.green(`Plugin cargado: ${file}`))
     } catch (error) {
-        console.error(
-            chalk.red('[EXCLUSIVE ERROR]'),
-            error.stack ||
-            error.message
-        )
+      console.error(chalk.red(`Error cargando ${file}:`), error)
     }
+  }
+
+  console.log(chalk.cyan(`Total de comandos: ${commands.size}`))
 }
 
-// Iniciar bot
+// Obtener el texto de un mensaje
+function getText(m) {
+  const message = m.message
+  if (!message) return ''
+
+  return (
+    message.conversation ||
+    message.extendedTextMessage?.text ||
+    message.imageMessage?.caption ||
+    message.videoMessage?.caption ||
+    message.documentMessage?.caption ||
+    message.buttonsResponseMessage?.selectedButtonId ||
+    message.listResponseMessage?.singleSelectReply?.selectedRowId ||
+    message.templateButtonReplyMessage?.selectedId ||
+    ''
+  )
+}
+
+// Obtener el mensaje real, incluso si está envuelto
+function unwrapMessage(message) {
+  let current = message
+
+  while (current) {
+    if (current.ephemeralMessage?.message) {
+      current = current.ephemeralMessage.message
+      continue
+    }
+
+    if (current.viewOnceMessage?.message) {
+      current = current.viewOnceMessage.message
+      continue
+    }
+
+    if (current.viewOnceMessageV2?.message) {
+      current = current.viewOnceMessageV2.message
+      continue
+    }
+
+    if (current.viewOnceMessageV2Extension?.message) {
+      current = current.viewOnceMessageV2Extension.message
+      continue
+    }
+
+    break
+  }
+
+  return current
+}
+
+// Obtener el hash de un sticker
+function getStickerHash(m) {
+  const message = unwrapMessage(m.message || {})
+  const sticker = message.stickerMessage
+
+  if (!sticker?.fileSha256) return null
+
+  return Buffer.from(sticker.fileSha256).toString('base64')
+}
+
+// Cargar los comandos asociados a stickers
+function loadStickerCommands() {
+  try {
+    if (!fs.existsSync(STICKERS_FILE)) {
+      fs.mkdirSync(path.dirname(STICKERS_FILE), { recursive: true })
+      fs.writeFileSync(STICKERS_FILE, '{}')
+    }
+
+    const data = JSON.parse(fs.readFileSync(STICKERS_FILE, 'utf8'))
+
+    return data && typeof data === 'object' && !Array.isArray(data)
+      ? data
+      : {}
+  } catch (error) {
+    console.error(chalk.red('Error leyendo stickers.json:'), error)
+    return {}
+  }
+}
+
+// Ejecutar un comando asociado a un sticker
+async function processSticker(sock, m) {
+  const hash = getStickerHash(m)
+  if (!hash) return false
+
+  const stickerCommands = loadStickerCommands()
+  const data = stickerCommands[hash]
+
+  if (!data || typeof data.text !== 'string') return false
+
+  const jid = m.key.remoteJid
+  const mentions = Array.isArray(data.mentionedJid)
+    ? data.mentionedJid
+    : []
+
+  await sock.sendMessage(
+    jid,
+    {
+      text: data.text,
+      mentions
+    },
+    {
+      quoted: m
+    }
+  )
+
+  return true
+}
+
+// Registrar los comandos ejecutados
+function logCommand(command, m, duration) {
+  const sender = m.key.participant || m.key.remoteJid
+
+  console.log(
+    chalk.cyan(`[COMANDO] ${command}`),
+    chalk.gray(`| Usuario: ${sender}`),
+    chalk.gray(`| Tiempo: ${duration.toFixed(2)} ms`)
+  )
+}
+
+// Procesar mensajes
+async function processMessage(sock, m) {
+  try {
+    if (!m?.message || !m.key?.remoteJid) return
+    if (m.key.remoteJid === 'status@broadcast') return
+    if (m.key.fromMe) return
+
+    const messageId = m.key.id
+
+    // Evitar procesar el mismo mensaje más de una vez
+    if (messageId) {
+      if (processedMessages.has(messageId)) return
+
+      processedMessages.add(messageId)
+
+      if (processedMessages.size > 5000) {
+        const oldest = processedMessages.values().next().value
+        processedMessages.delete(oldest)
+      }
+    }
+
+    // Procesar los comandos asociados a stickers
+    const messageContent = unwrapMessage(m.message)
+
+    if (messageContent.stickerMessage) {
+      await processSticker(sock, m)
+      return
+    }
+
+    const text = getText(m).trim()
+    if (!text) return
+
+    const prefix = config.PREFIX || '.'
+
+    // Comprobar el prefijo
+    if (!text.startsWith(prefix)) return
+
+    const args = text.slice(prefix.length).trim().split(/\s+/)
+    const command = (args.shift() || '').toLowerCase()
+
+    if (!command) return
+
+    const handler = commands.get(command)
+    if (!handler) return
+
+    // Ejecutar el comando sin bloquear otros mensajes
+    const start = performance.now()
+
+    try {
+      await handler.run(sock, m, args)
+      logCommand(command, m, performance.now() - start)
+    } catch (error) {
+      console.error(chalk.red(`Error en el comando ${command}:`), error)
+
+      await sock.sendMessage(
+        m.key.remoteJid,
+        {
+          text: 'Ocurrió un error al ejecutar el comando.'
+        },
+        {
+          quoted: m
+        }
+      ).catch(() => {})
+    }
+  } catch (error) {
+    console.error(chalk.red('Error procesando mensaje:'), error)
+  }
+}
+
+// Configurar los eventos del socket
+function setupSocket(sock) {
+  sock.ev.on('messages.upsert', ({ messages, type }) => {
+    if (type !== 'notify') return
+
+    for (const m of messages || []) {
+      // Cada mensaje se procesa de forma independiente
+      void processMessage(sock, m)
+    }
+  })
+
+  sock.ev.on('connection.update', async update => {
+    const { connection, lastDisconnect } = update
+
+    if (connection === 'open') {
+      reconnecting = false
+      console.log(chalk.green('Bot conectado correctamente'))
+    }
+
+    if (connection === 'close' && !reconnecting) {
+      reconnecting = true
+
+      const statusCode = lastDisconnect?.error?.output?.statusCode
+
+      console.log(
+        chalk.yellow(`Conexión cerrada. Código: ${statusCode ?? 'desconocido'}`)
+      )
+
+      // Reconectar si la conexión se cierra
+      if (statusCode !== 401) {
+        try {
+          const newSock = await connect()
+          setupSocket(newSock)
+        } catch (error) {
+          reconnecting = false
+          console.error(chalk.red('Error al reconectar:'), error)
+        }
+      } else {
+        reconnecting = false
+        console.log(chalk.red('La sesión necesita volver a vincularse'))
+      }
+    }
+  })
+}
+
+// Iniciar el bot
 async function startBot() {
-    banner()
+  banner()
 
-    await loadPlugins()
+  await loadPlugins()
 
-    console.log(
-        chalk.hex('#B388FF')(
-            '  Conectando con WhatsApp...\n'
-        )
-    )
+  console.log(chalk.green('Iniciando bot...'))
 
-    await connect(sock => {
-
-        sock.ev.on(
-            'messages.upsert',
-            ({ messages, type }) => {
-
-                if (
-                    type !== 'notify' &&
-                    type !== 'append'
-                ) {
-                    return
-                }
-
-                for (const m of messages || []) {
-                    void processMessage(
-                        sock,
-                        m
-                    )
-                }
-            }
-        )
-    })
-
-    console.log(
-        chalk.green(
-            '  ✔ Exclusive está listo para recibir comandos.\n'
-        )
-    )
+  try {
+    const sock = await connect()
+    setupSocket(sock)
+  } catch (error) {
+    reconnecting = false
+    console.error(chalk.red('Error iniciando el bot:'), error)
+  }
 }
 
-startBot().catch(error => {
-    console.error(
-        chalk.red('[ERROR FATAL]'),
-        error.stack ||
-        error.message
-    )
-
-    process.exitCode = 1
-})
+startBot()
