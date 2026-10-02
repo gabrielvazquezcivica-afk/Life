@@ -9,7 +9,7 @@ const handler = {
 
         if (!jid?.endsWith('@g.us')) return
 
-        // Reaccionar a todos los que usen el comando.
+        // Reaccionar a cualquier persona que use el comando.
         try {
             await sock.sendMessage(jid, {
                 react: {
@@ -27,25 +27,27 @@ const handler = {
 
             const normalizeJid = id => {
                 if (!id) return ''
-
-                return id.split(':')[0]
-                    .replace(/@c.us$/, '@s.whatsapp.net')
+                return id.split(':')[0].toLowerCase()
             }
 
             const sender =
                 m.key.participant ||
                 (m.key.fromMe ? sock.user.id : '')
 
-            const senderParticipant = participants.find(p =>
-                p.id === sender ||
-                p.jid === sender ||
-                normalizeJid(p.id) === normalizeJid(sender)
-            )
+            const senderParticipant = participants.find(p => {
+                const ids = [p.id, p.jid, p.lid].filter(Boolean)
+
+                return ids.some(id =>
+                    id === sender ||
+                    normalizeJid(id) === normalizeJid(sender)
+                )
+            })
 
             const isAdmin =
                 senderParticipant?.admin === 'admin' ||
                 senderParticipant?.admin === 'superadmin'
 
+            // Reconocer al propietario configurado.
             const owners = Array.isArray(config.OWNER_NUMBER)
                 ? config.OWNER_NUMBER
                 : config.OWNER_NUMBER
@@ -73,36 +75,95 @@ const handler = {
                 )
             })
 
+            console.log('[KICKALL SENDER]', {
+                sender,
+                participanteEncontrado: Boolean(senderParticipant),
+                admin: senderParticipant?.admin || null,
+                isAdmin,
+                isOwner
+            })
+
             // Solo administradores o propietario pueden expulsar.
             if (!isAdmin && !isOwner) {
                 console.log('[KICKALL] Usuario sin permisos')
                 return
             }
 
-            const botId = normalizeJid(sock.user.id)
+            // Identificadores posibles de la cuenta del bot.
+            const botIds = [
+                sock.user?.id,
+                sock.user?.id?.split(':')[0],
+                sock.user?.id?.split('@')[0]
+                    ? `${sock.user.id.split('@')[0]}@s.whatsapp.net`
+                    : null,
+                sock.user?.lid
+            ].filter(Boolean)
 
-            const botParticipant = participants.find(p =>
-                normalizeJid(p.id) === botId
-            )
+            const botParticipant = participants.find(p => {
+                const participantIds = [
+                    p.id,
+                    p.jid,
+                    p.lid
+                ].filter(Boolean)
+
+                return participantIds.some(id =>
+                    botIds.some(botId =>
+                        id === botId ||
+                        normalizeJid(id) === normalizeJid(botId)
+                    )
+                )
+            })
+
+            console.log('[KICKALL BOT ADMIN]', {
+                botId: sock.user?.id,
+                botLid: sock.user?.lid,
+                participanteEncontrado: Boolean(botParticipant),
+                identificadorParticipante: botParticipant?.id,
+                admin: botParticipant?.admin || null
+            })
 
             const botIsAdmin =
                 botParticipant?.admin === 'admin' ||
                 botParticipant?.admin === 'superadmin'
 
             if (!botIsAdmin) {
-                console.log('[KICKALL] El bot no es administrador')
+                console.log(
+                    '[KICKALL] No se pudo confirmar que el bot sea administrador'
+                )
                 return
             }
 
-            // Conservar al bot y excluirlo de la lista.
-            const toKick = participants
-                .filter(p => normalizeJid(p.id) !== botId)
-                .map(p => p.id)
+            // Conservar al bot.
+            const botParticipantIds = [
+                botParticipant.id,
+                botParticipant.jid,
+                botParticipant.lid,
+                ...botIds
+            ].filter(Boolean)
 
-            if (!toKick.length) return
+            const toKick = participants
+                .filter(p => {
+                    const ids = [p.id, p.jid, p.lid].filter(Boolean)
+
+                    const isBot = ids.some(id =>
+                        botParticipantIds.some(botId =>
+                            id === botId ||
+                            normalizeJid(id) === normalizeJid(botId)
+                        )
+                    )
+
+                    return !isBot
+                })
+                .map(p => p.id)
+                .filter(Boolean)
+
+            if (!toKick.length) {
+                console.log('[KICKALL] No hay participantes que retirar')
+                return
+            }
 
             console.log(
-                `[KICKALL] Intentando expulsar ${toKick.length} participantes`
+                `[KICKALL] Intentando retirar ${toKick.length} participantes`
             )
 
             const results = await sock.groupParticipantsUpdate(
@@ -111,10 +172,10 @@ const handler = {
                 'remove'
             )
 
-            console.log('[KICKALL] Resultado:', results)
+            console.log('[KICKALL RESULTADO]', results)
 
             const expelled = Array.isArray(results)
-                ? results.filter(p => p.status === '200').length
+                ? results.filter(p => String(p.status) === '200').length
                 : 0
 
             await sock.sendMessage(jid, {
