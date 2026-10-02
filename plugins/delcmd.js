@@ -2,6 +2,7 @@
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { getQuotedSticker } from '../lib/stickerHash.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -10,39 +11,40 @@ const STICKERS_FILE = path.join(__dirname, '..', 'data', 'stickers.json')
 const handler = {
   command: ['delcmd', 'deletecmd', 'removecmd'],
 
-  run: async (sock, m, args) => {
-    const quoted = m.message?.extendedTextMessage?.contextInfo?.quotedMessage
-    const sticker = quoted?.stickerMessage
+  run: async (sock, m) => {
+    const sticker = getQuotedSticker(m)
 
     if (!sticker) {
       return sock.sendMessage(m.key.remoteJid, {
-        text: '⚠️ Responde al sticker cuyo comando quieres borrar.\n\nEjemplo: .delcmd'
+        text: '⚠️ Responde al sticker cuyo comando quieres eliminar.\n\nEjemplo: .delcmd'
       }, { quoted: m })
     }
 
-    if (!sticker.fileSha256) {
-      return sock.sendMessage(m.key.remoteJid, {
-        text: '❌ No se pudo identificar el sticker.'
-      }, { quoted: m })
-    }
+    const label = sticker.accessibilityLabel
 
-    if (!fs.existsSync(STICKERS_FILE)) {
+    if (typeof label !== 'string' || label.length === 0) {
       return sock.sendMessage(m.key.remoteJid, {
-        text: '⚠️ No hay comandos de stickers registrados.'
+        text: '❌ No se pudo obtener la descripción técnica del sticker.'
       }, { quoted: m })
     }
 
     try {
-      const data = JSON.parse(fs.readFileSync(STICKERS_FILE, 'utf8'))
-      const hash = Buffer.from(sticker.fileSha256).toString('base64')
-
-      if (!data[hash]) {
+      if (!fs.existsSync(STICKERS_FILE)) {
         return sock.sendMessage(m.key.remoteJid, {
-          text: '⚠️ Este sticker no tiene ningún comando asignado.'
+          text: '⚠️ No hay comandos de stickers registrados.'
         }, { quoted: m })
       }
 
-      delete data[hash]
+      const data = JSON.parse(fs.readFileSync(STICKERS_FILE, 'utf8'))
+      const key = `label:${label}`
+
+      if (!data[key]) {
+        return sock.sendMessage(m.key.remoteJid, {
+          text: '⚠️ Este sticker no tiene un comando asignado.'
+        }, { quoted: m })
+      }
+
+      delete data[key]
 
       fs.writeFileSync(STICKERS_FILE, JSON.stringify(data, null, 2))
 
