@@ -27,7 +27,7 @@ function banner() {
   `))
 }
 
-// Cargar los comandos
+// Cargar los plugins
 async function loadPlugins() {
   const pluginsDir = path.join(__dirname, 'plugins')
 
@@ -57,8 +57,7 @@ async function loadPlugins() {
         : [handler.command]
 
       for (const name of names) {
-        if (!name) continue
-        commands.set(String(name).toLowerCase(), handler)
+        if (name) commands.set(String(name).toLowerCase(), handler)
       }
 
       console.log(chalk.green(`Plugin cargado: ${file}`))
@@ -70,25 +69,7 @@ async function loadPlugins() {
   console.log(chalk.cyan(`Total de comandos: ${commands.size}`))
 }
 
-// Obtener el texto de un mensaje
-function getText(m) {
-  const message = unwrapMessage(m.message || {})
-  if (!message) return ''
-
-  return (
-    message.conversation ||
-    message.extendedTextMessage?.text ||
-    message.imageMessage?.caption ||
-    message.videoMessage?.caption ||
-    message.documentMessage?.caption ||
-    message.buttonsResponseMessage?.selectedButtonId ||
-    message.listResponseMessage?.singleSelectReply?.selectedRowId ||
-    message.templateButtonReplyMessage?.selectedId ||
-    ''
-  )
-}
-
-// Obtener el mensaje real, incluso si está envuelto
+// Obtener el mensaje interno
 function unwrapMessage(message) {
   let current = message
 
@@ -116,20 +97,35 @@ function unwrapMessage(message) {
     break
   }
 
-  return current
+  return current || {}
 }
 
-// Obtener el hash de un sticker
-function getStickerHash(m) {
+// Obtener el texto del mensaje
+function getText(m) {
   const message = unwrapMessage(m.message || {})
-  const sticker = message.stickerMessage
 
-  if (!sticker?.fileSha256) return null
-
-  return Buffer.from(sticker.fileSha256).toString('base64')
+  return (
+    message.conversation ||
+    message.extendedTextMessage?.text ||
+    message.imageMessage?.caption ||
+    message.videoMessage?.caption ||
+    message.documentMessage?.caption ||
+    message.buttonsResponseMessage?.selectedButtonId ||
+    message.listResponseMessage?.singleSelectReply?.selectedRowId ||
+    message.templateButtonReplyMessage?.selectedId ||
+    ''
+  )
 }
 
-// Cargar los comandos asociados a stickers
+// Obtener la descripción exacta del sticker
+function getStickerLabel(sticker) {
+  if (typeof sticker?.accessibilityLabel !== 'string') return null
+  if (!sticker.accessibilityLabel.length) return null
+
+  return sticker.accessibilityLabel
+}
+
+// Cargar las asociaciones de stickers
 function loadStickerCommands() {
   try {
     if (!fs.existsSync(STICKERS_FILE)) {
@@ -148,63 +144,32 @@ function loadStickerCommands() {
   }
 }
 
-// Ejecutar el comando asociado a un sticker
+// Ejecutar un comando asociado a la descripción exacta
 async function processSticker(sock, m) {
-  const hash = getStickerHash(m)
-  if (!hash) return false
+  const message = unwrapMessage(m.message || {})
+  const sticker = message.stickerMessage
 
-  const stickerCommands = loadStickerCommands()
-  const data = stickerCommands[hash]
+  if (!sticker) return
 
-  // Ignorar stickers sin comandos asociados
-  if (!data) return false
+  const label = getStickerLabel(sticker)
 
-  // Aceptar el formato nuevo y el formato anterior
-  const savedCommand = data.command || data.text
-  if (typeof savedCommand !== 'string' || !savedCommand.trim()) {
-    return false
-  }
+  // Ignorar stickers que no contienen descripción
+  if (label === null) return
 
-  const prefix = config.PREFIX || '.'
-  const text = savedCommand.trim()
-  const normalizedText = text.startsWith(prefix)
-    ? text
-    : `${prefix}${text}`
+  const records = loadStickerCommands()
+  const saved = records[`label:${label}`]
 
-  const args = normalizedText.slice(prefix.length).trim().split(/\s+/)
-  const command = (args.shift() || '').toLowerCase()
+  // Ignorar stickers sin comando asignado
+  if (!saved) return
 
-  if (!command) return false
+  const commandText = saved.command
 
-  const handler = commands.get(command)
+  if (typeof commandText !== 'string' || !commandText.trim()) return
 
-  // Si el comando no existe, simplemente ignorar el sticker
-  if (!handler) return false
-
-  const start = performance.now()
-
-  try {
-    await handler.run(sock, m, args)
-    logCommand(command, m, performance.now() - start)
-    return true
-  } catch (error) {
-    console.error(chalk.red(`Error en el comando ${command} ejecutado por sticker:`), error)
-
-    await sock.sendMessage(
-      m.key.remoteJid,
-      {
-        text: 'Ocurrió un error al ejecutar el comando del sticker.'
-      },
-      {
-        quoted: m
-      }
-    ).catch(() => {})
-
-    return false
-  }
+  await executeCommand(sock, m, commandText)
 }
 
-// Registrar los comandos ejecutados
+// Registrar la ejecución de un comando
 function logCommand(command, m, duration) {
   const sender = m.key.participant || m.key.remoteJid
 
@@ -215,7 +180,45 @@ function logCommand(command, m, duration) {
   )
 }
 
-// Procesar mensajes
+// Ejecutar un comando
+async function executeCommand(sock, m, commandText) {
+  const prefix = config.PREFIX || '.'
+  const text = commandText.trim()
+
+  if (!text) return
+
+  const normalized = text.startsWith(prefix)
+    ? text
+    : `${prefix}${text}`
+
+  const body = normalized.slice(prefix.length).trim()
+  if (!body) return
+
+  const args = body.split(/\s+/)
+  const command = (args.shift() || '').toLowerCase()
+
+  if (!command) return
+
+  const handler = commands.get(command)
+  if (!handler) return
+
+  const start = performance.now()
+
+  try {
+    await handler.run(sock, m, args)
+    logCommand(command, m, performance.now() - start)
+  } catch (error) {
+    console.error(chalk.red(`Error en el comando ${command}:`), error)
+
+    await sock.sendMessage(
+      m.key.remoteJid,
+      { text: 'Ocurrió un error al ejecutar el comando.' },
+      { quoted: m }
+    ).catch(() => {})
+  }
+}
+
+// Procesar los mensajes
 async function processMessage(sock, m) {
   try {
     if (!m?.message || !m.key?.remoteJid) return
@@ -224,7 +227,7 @@ async function processMessage(sock, m) {
 
     const messageId = m.key.id
 
-    // Evitar procesar el mismo mensaje más de una vez
+    // Evitar procesar el mismo mensaje dos veces
     if (messageId) {
       if (processedMessages.has(messageId)) return
 
@@ -238,7 +241,7 @@ async function processMessage(sock, m) {
 
     const messageContent = unwrapMessage(m.message)
 
-    // Ejecutar el comando asociado cuando se envía un sticker
+    // Ejecutar el comando de un sticker
     if (messageContent.stickerMessage) {
       await processSticker(sock, m)
       return
@@ -252,33 +255,7 @@ async function processMessage(sock, m) {
     // Comprobar el prefijo
     if (!text.startsWith(prefix)) return
 
-    const args = text.slice(prefix.length).trim().split(/\s+/)
-    const command = (args.shift() || '').toLowerCase()
-
-    if (!command) return
-
-    const handler = commands.get(command)
-    if (!handler) return
-
-    // Ejecutar el comando sin bloquear otros mensajes
-    const start = performance.now()
-
-    try {
-      await handler.run(sock, m, args)
-      logCommand(command, m, performance.now() - start)
-    } catch (error) {
-      console.error(chalk.red(`Error en el comando ${command}:`), error)
-
-      await sock.sendMessage(
-        m.key.remoteJid,
-        {
-          text: 'Ocurrió un error al ejecutar el comando.'
-        },
-        {
-          quoted: m
-        }
-      ).catch(() => {})
-    }
+    await executeCommand(sock, m, text)
   } catch (error) {
     console.error(chalk.red('Error procesando mensaje:'), error)
   }
@@ -290,7 +267,6 @@ function setupSocket(sock) {
     if (type !== 'notify') return
 
     for (const m of messages || []) {
-      // Procesar cada mensaje de forma independiente
       void processMessage(sock, m)
     }
   })
@@ -312,7 +288,6 @@ function setupSocket(sock) {
         chalk.yellow(`Conexión cerrada. Código: ${statusCode ?? 'desconocido'}`)
       )
 
-      // Reconectar si la conexión se cierra
       if (statusCode !== 401) {
         try {
           const newSock = await connect()
