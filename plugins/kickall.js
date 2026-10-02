@@ -1,3 +1,4 @@
+
 import config from '../config.js'
 
 const handler = {}
@@ -7,7 +8,12 @@ function normalizarJid(jid = '') {
 }
 
 function obtenerIds(p = {}) {
-  return [p.id, p.jid, p.lid, p.phoneNumber]
+  return [
+    p.id,
+    p.jid,
+    p.lid,
+    p.phoneNumber
+  ]
     .filter(Boolean)
     .map(normalizarJid)
 }
@@ -23,6 +29,7 @@ handler.run = async (sock, m) => {
 
   if (!jid?.endsWith('@g.us')) return
 
+  // Reaccionar a quien use el comando.
   try {
     await sock.sendMessage(jid, {
       react: {
@@ -30,25 +37,32 @@ handler.run = async (sock, m) => {
         key: m.key
       }
     })
+  } catch {}
 
+  try {
     const metadata = await sock.groupMetadata(jid)
     const participantes = metadata.participants || []
 
-    const sender = m.key.participant ||
+    const sender = normalizarJid(
+      m.key.participant ||
       (m.key.fromMe ? sock.user?.lid || sock.user?.id : '')
-
-    const usuarioInfo = participantes.find(p =>
-      obtenerIds(p).includes(normalizarJid(sender))
     )
 
+    const usuarioInfo = participantes.find(p =>
+      obtenerIds(p).includes(sender)
+    )
+
+    // Identificar al usuario que ejecuta el comando.
     const idsUsuario = [
-      normalizarJid(sender),
+      sender,
       ...obtenerIds(usuarioInfo || {})
     ].filter(Boolean)
 
-    const numeroUsuario = String(sender)
-      .split('@')[0]
-      .split(':')[0]
+    const esAdminUsuario =
+      usuarioInfo?.admin === 'admin' ||
+      usuarioInfo?.admin === 'superadmin'
+
+    const numeroUsuario = sender.split('@')[0].split(':')[0]
 
     const owners = Array.isArray(config.OWNER_NUMBER)
       ? config.OWNER_NUMBER
@@ -56,26 +70,27 @@ handler.run = async (sock, m) => {
 
     const esOwner = owners
       .filter(Boolean)
-      .some(owner =>
-        String(owner).replace(/\D/g, '') === numeroUsuario.replace(/\D/g, '')
-      )
+      .some(owner => {
+        const numeroOwner = String(owner).replace(/\D/g, '')
+        return numeroOwner && numeroOwner === numeroUsuario
+      })
 
-    const esAdmin =
-      usuarioInfo?.admin === 'admin' ||
-      usuarioInfo?.admin === 'superadmin'
+    if (!esAdminUsuario && !esOwner) return
 
-    if (!esAdmin && !esOwner) return
-
+    // Identificar al bot.
     const idsBot = [
       sock.user?.id,
       sock.user?.jid,
       sock.user?.lid
-    ].filter(Boolean).map(normalizarJid)
+    ]
+      .filter(Boolean)
+      .map(normalizarJid)
 
     let botInfo = participantes.find(p =>
       coinciden(obtenerIds(p), idsBot)
     )
 
+    // Si el comando lo envió el propio bot, usar su participante identificado.
     if (!botInfo && m.key.fromMe && usuarioInfo) {
       botInfo = usuarioInfo
     }
@@ -84,38 +99,39 @@ handler.run = async (sock, m) => {
       botInfo?.admin === 'admin' ||
       botInfo?.admin === 'superadmin'
 
-    if (!botEsAdmin) return
+    if (!botInfo || !botEsAdmin) return
 
     const idsDelBot = obtenerIds(botInfo)
 
-    const creadorJid = metadata.owner
-    const creadorInfo = participantes.find(p =>
-      creadorJid &&
-      obtenerIds(p).includes(normalizarJid(creadorJid))
-    ) || participantes.find(p => p.admin === 'superadmin')
-
-    const idsCreador = [
-      ...(creadorJid ? [normalizarJid(creadorJid)] : []),
-      ...obtenerIds(creadorInfo || {})
-    ].filter(Boolean)
-
+    // Conservar al bot y expulsar a los demás participantes.
     const objetivos = participantes
-      .filter(p => {
-        const ids = obtenerIds(p)
-        const esBot = coinciden(ids, idsDelBot)
-        const esCreador = coinciden(ids, idsCreador)
-
-        return !esBot && !esCreador
-      })
+      .filter(p => !coinciden(obtenerIds(p), idsDelBot))
       .map(p => p.id || p.jid)
       .filter(Boolean)
 
     if (!objetivos.length) return
 
-    await sock.groupParticipantsUpdate(jid, objetivos, 'remove')
-  } catch {
-    return
-  }
+    const resultados = await sock.groupParticipantsUpdate(
+      jid,
+      objetivos,
+      'remove'
+    )
+
+    const expulsados = Array.isArray(resultados)
+      ? resultados.filter(r =>
+          r.status === '200' ||
+          r.status === '201' ||
+          r.status === 200 ||
+          r.status === 201
+        ).length
+      : 0
+
+    if (expulsados > 0) {
+      await sock.sendMessage(jid, {
+  text: `𝐃𝐎𝐌𝐀𝐃𝐎𝐒 𝐗 𝐄𝐗𝐂𝐋𝐔𝐒𝐈𝐕𝐄\n> 𝘨𝘨 𝘴𝘦 𝘧𝘶𝘦𝘳𝘰𝘯 𝘥𝘰𝘮𝘢𝘥𝘰𝘴: ${expelled}`
+})
+    }
+  } catch {}
 }
 
 export default handler
