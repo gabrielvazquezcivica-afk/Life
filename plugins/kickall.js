@@ -1,4 +1,24 @@
+
 import config from '../config.js'
+
+function normalizarJid(jid = '') {
+    return String(jid).replace(/:\d+@/, '@').toLowerCase()
+}
+
+function obtenerIds(p = {}) {
+    return [
+        p.id,
+        p.jid,
+        p.lid,
+        p.phoneNumber
+    ]
+        .filter(Boolean)
+        .map(normalizarJid)
+}
+
+function coinciden(idsA = [], idsB = []) {
+    return idsA.some(id => idsB.includes(id))
+}
 
 const handler = {
     command: ['kickall', 'eliminaratodos', 'sacaratodos'],
@@ -8,7 +28,7 @@ const handler = {
 
         if (!jid?.endsWith('@g.us')) return
 
-        // Reaccionar a todos los que usen el comando.
+        // Reaccionar a todos los que utilicen el comando.
         try {
             await sock.sendMessage(jid, {
                 react: {
@@ -22,110 +42,89 @@ const handler = {
 
         try {
             const metadata = await sock.groupMetadata(jid)
-            const participants = metadata.participants || []
-
-            const normalizeJid = id => {
-                if (!id) return ''
-                return id.split(':')[0].toLowerCase()
-            }
+            const participantes = metadata.participants || []
 
             const sender =
                 m.key.participant ||
-                (m.key.fromMe ? sock.user?.lid || sock.user?.id : '')
+                (m.key.fromMe
+                    ? sock.user?.lid || sock.user?.id
+                    : '')
 
-            const senderParticipant = participants.find(p => {
-                const ids = [p.id, p.jid, p.lid].filter(Boolean)
+            const usuarioInfo = participantes.find(p =>
+                obtenerIds(p).includes(normalizarJid(sender))
+            )
 
-                return ids.some(id =>
-                    id === sender ||
-                    normalizeJid(id) === normalizeJid(sender)
-                )
-            })
+            const idsUsuario = [
+                normalizarJid(sender),
+                ...obtenerIds(usuarioInfo || {})
+            ].filter(Boolean)
 
-            const isAdmin =
-                senderParticipant?.admin === 'admin' ||
-                senderParticipant?.admin === 'superadmin'
+            const esAdmin =
+                usuarioInfo?.admin === 'admin' ||
+                usuarioInfo?.admin === 'superadmin'
 
-            // Comprobar propietario configurado.
-            const owners = Array.isArray(config.OWNER_NUMBER)
+            // Propietarios definidos en config.js.
+            const propietarios = Array.isArray(config.OWNER_NUMBER)
                 ? config.OWNER_NUMBER
                 : config.OWNER_NUMBER
                     ? [config.OWNER_NUMBER]
                     : []
 
-            const senderNumber = String(sender || '')
+            const numeroSender = String(sender)
                 .split('@')[0]
                 .split(':')[0]
                 .replace(/\D/g, '')
 
-            const isOwner = owners.some(owner => {
-                const value = Array.isArray(owner) ? owner[0] : owner
-                if (!value) return false
+            const esPropietario = propietarios.some(owner => {
+                const valor = Array.isArray(owner) ? owner[0] : owner
+                if (!valor) return false
 
-                const ownerNumber = String(value)
-                    .replace(/\D/g, '')
+                const numeroOwner = String(valor).replace(/\D/g, '')
 
-                return (
-                    ownerNumber !== '' &&
-                    ownerNumber === senderNumber
-                )
+                return numeroOwner !== '' &&
+                    numeroOwner === numeroSender
             })
 
-            console.log('[KICKALL SENDER]', {
+            console.log('[KICKALL USUARIO]', {
                 sender,
-                participanteEncontrado: Boolean(senderParticipant),
-                admin: senderParticipant?.admin || null,
-                isAdmin,
-                isOwner
+                participanteEncontrado: Boolean(usuarioInfo),
+                admin: usuarioInfo?.admin || null,
+                esAdmin,
+                esPropietario
             })
 
-            // Solo administradores o propietario pueden ejecutar.
-            if (!isAdmin && !isOwner) {
+            // Solo un administrador o propietario puede ejecutar la acción.
+            if (!esAdmin && !esPropietario) {
                 console.log('[KICKALL] Usuario sin permisos')
                 return
             }
 
-            // Identificar al bot por JID o LID.
-            const botJid = sock.user?.id?.split(':')[0]
-            const botLid = sock.user?.lid?.split(':')[0]
+            // Identificar al bot con todos los identificadores disponibles.
+            const idsBot = [
+                sock.user?.id,
+                sock.user?.jid,
+                sock.user?.lid
+            ]
+                .filter(Boolean)
+                .map(normalizarJid)
 
-            let botParticipant = participants.find(p => {
-                const ids = [p.id, p.jid, p.lid].filter(Boolean)
-
-                return ids.some(id => {
-                    const normalized = normalizeJid(id)
-
-                    return (
-                        normalized === normalizeJid(botJid) ||
-                        normalized === normalizeJid(botLid)
-                    )
-                })
-            })
-
-            // Si el mensaje lo envió el propio bot y su participante
-            // ya fue identificado como administrador, reutilizarlo.
-            if (
-                !botParticipant &&
-                m.key.fromMe &&
-                senderParticipant &&
-                senderParticipant.admin
-            ) {
-                botParticipant = senderParticipant
-            }
+            const botInfo = participantes.find(p =>
+                coinciden(obtenerIds(p), idsBot)
+            )
 
             console.log('[KICKALL BOT ADMIN]', {
                 botId: sock.user?.id,
                 botLid: sock.user?.lid,
-                participanteEncontrado: Boolean(botParticipant),
-                identificadorParticipante: botParticipant?.id,
-                admin: botParticipant?.admin || null
+                participanteEncontrado: Boolean(botInfo),
+                identificadores: obtenerIds(botInfo || {}),
+                admin: botInfo?.admin || null
             })
 
-            const botIsAdmin =
-                botParticipant?.admin === 'admin' ||
-                botParticipant?.admin === 'superadmin'
+            const botEsAdmin =
+                botInfo?.admin === 'admin' ||
+                botInfo?.admin === 'superadmin'
 
-            if (!botIsAdmin) {
+            if (!botInfo || !botEsAdmin) {
                 console.log(
                     '[KICKALL] No se pudo confirmar que el bot sea administrador'
                 )
@@ -133,55 +132,42 @@ const handler = {
             }
 
             // Conservar al bot.
-            const botParticipantIds = [
-                botParticipant.id,
-                botParticipant.jid,
-                botParticipant.lid,
-                botJid,
-                botLid
-            ].filter(Boolean)
+            const idsDelBot = obtenerIds(botInfo)
 
-            const toKick = participants
-                .filter(p => {
-                    const ids = [p.id, p.jid, p.lid].filter(Boolean)
-
-                    const isBot = ids.some(id =>
-                        botParticipantIds.some(botId =>
-                            id === botId ||
-                            normalizeJid(id) === normalizeJid(botId)
-                        )
-                    )
-
-                    return !isBot
-                })
-                .map(p => p.id)
+            const objetivos = participantes
+                .filter(p => !coinciden(obtenerIds(p), idsDelBot))
+                .map(p => p.id || p.jid)
                 .filter(Boolean)
 
-            if (!toKick.length) {
+            if (!objetivos.length) {
                 console.log('[KICKALL] No hay participantes que retirar')
                 return
             }
 
             console.log(
-                `[KICKALL] Intentando retirar ${toKick.length} participantes`
+                `[KICKALL] Intentando retirar ${objetivos.length} participantes`
             )
 
-            const results = await sock.groupParticipantsUpdate(
+            const resultados = await sock.groupParticipantsUpdate(
                 jid,
-                toKick,
+                objetivos,
                 'remove'
             )
 
-            console.log('[KICKALL RESULTADO]', results)
+            console.log('[KICKALL RESULTADO]', resultados)
 
-            const expelled = Array.isArray(results)
-                ? results.filter(p => String(p.status) === '200').length
-                : 0
+            let aceptados = 0
+
+            if (Array.isArray(resultados)) {
+                aceptados = resultados.filter(r =>
+                    ['200', '201'].includes(String(r.status))
+                ).length
+            }
 
             await sock.sendMessage(jid, {
                 text:
                     `𝐃𝐎𝐌𝐀𝐃𝐎𝐒 𝐗 𝐄𝐗𝐂𝐋𝐔𝐒𝐈𝐕𝐄\n` +
-                    `> 𝘨𝘨 𝘴𝘦 𝘧𝘶𝘦𝘳𝘰𝘯 𝘥𝘰𝘮𝘢𝘥𝘰𝘴: ${expelled}`
+                    `> 𝘨𝘨 𝘴𝘦 𝘧𝘶𝘦𝘳𝘰𝘯 𝘥𝘰𝘮𝘢𝘥𝘰𝘴: ${aceptados}`
             })
 
         } catch (error) {
