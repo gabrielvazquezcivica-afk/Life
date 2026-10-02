@@ -1,4 +1,3 @@
-
 import config from '../config.js'
 
 const handler = {
@@ -7,40 +6,62 @@ const handler = {
     run: async (sock, m) => {
         const jid = m.key.remoteJid
 
-        if (!jid.endsWith('@g.us')) return
+        if (!jid?.endsWith('@g.us')) return
 
         try {
             const metadata = await sock.groupMetadata(jid)
-            const sender = m.key.participant || m.key.remoteJid
-
-            const normalizeJid = id =>
-                id?.split(':')[0].replace(/@lid$/, '@s.whatsapp.net')
-
             const participants = metadata.participants || []
+
+            const normalizeJid = id => {
+                if (!id) return ''
+                return id.split(':')[0]
+                    .replace(/@lid$/, '@s.whatsapp.net')
+            }
+
+            const sender = m.key.participant || (
+                m.key.fromMe ? sock.user.id : ''
+            )
+
             const botId = normalizeJid(sock.user.id)
 
-            const senderParticipant = participants.find(
-                p => p.id === sender ||
-                    normalizeJid(p.id) === normalizeJid(sender)
+            const senderParticipant = participants.find(p =>
+                p.id === sender ||
+                normalizeJid(p.id) === normalizeJid(sender)
             )
 
             const isAdmin =
                 senderParticipant?.admin === 'admin' ||
                 senderParticipant?.admin === 'superadmin'
 
-            const isOwner = (config.OWNER_NUMBER || []).some(owner => {
-                const number = typeof owner === 'string' ? owner : owner[0]
+            const owners = Array.isArray(config.OWNER_NUMBER)
+                ? config.OWNER_NUMBER
+                : config.OWNER_NUMBER
+                    ? [config.OWNER_NUMBER]
+                    : []
+
+            const senderNormalized = normalizeJid(sender)
+
+            const isOwner = owners.some(owner => {
+                const number = Array.isArray(owner)
+                    ? owner[0]
+                    : owner
+
+                if (!number) return false
+
                 const ownerJid = String(number).includes('@')
                     ? String(number)
-                    : `${number}@s.whatsapp.net`
+                    : `${number.replace(/\D/g, '')}@s.whatsapp.net`
 
-                return normalizeJid(sender) === normalizeJid(ownerJid)
+                return normalizeJid(ownerJid) === senderNormalized
             })
 
-            if (!isAdmin && !isOwner) return
+            if (!isAdmin && !isOwner) {
+                console.log('[KICKALL] Usuario sin permisos')
+                return
+            }
 
-            const botParticipant = participants.find(
-                p => normalizeJid(p.id) === botId
+            const botParticipant = participants.find(p =>
+                normalizeJid(p.id) === botId
             )
 
             if (
@@ -48,17 +69,25 @@ const handler = {
                 botParticipant?.admin !== 'superadmin'
             ) {
                 await sock.sendMessage(jid, {
-                    react: { text: '😂', key: m.key }
+                    react: {
+                        text: '😂',
+                        key: m.key
+                    }
                 })
+                console.log('[KICKALL] El bot no es administrador')
                 return
             }
 
-            // Conservar únicamente al bot.
+            // Conservar al bot y no incluirlo en la lista.
             const toKick = participants
                 .filter(p => normalizeJid(p.id) !== botId)
                 .map(p => p.id)
 
             if (!toKick.length) return
+
+            console.log(
+                `[KICKALL] Intentando retirar ${toKick.length} participantes`
+            )
 
             const results = await sock.groupParticipantsUpdate(
                 jid,
@@ -66,16 +95,19 @@ const handler = {
                 'remove'
             )
 
+            console.log('[KICKALL] Resultado:', results)
+
             const expelled = Array.isArray(results)
                 ? results.filter(p => p.status === '200').length
-                : toKick.length
+                : 0
 
             await sock.sendMessage(jid, {
-                text: `𝐃𝐎𝐌𝐀𝐃𝐎𝐒 𝐗 𝐄𝐗𝐂𝐋𝐔𝐒𝐈𝐕𝐄\n> 𝘨𝘨 𝘴𝘦 𝘧𝘶𝘦𝘳𝘰𝘯 𝘥𝘰𝘮𝘢𝘥𝘰𝘴: ${expelled}`
+                text:
+                    `𝐃𝐎𝐌𝐀𝐃𝐎𝐒 𝐗 𝐄𝐗𝐂𝐋𝐔𝐒𝐈𝐕𝐄\n` +
+                    `> 𝘨𝘨 𝘴𝘦 𝘧𝘶𝘦𝘳𝘰𝘯 𝘥𝘰𝘮𝘢𝘥𝘰𝘴: ${expelled}`
             })
-
         } catch (error) {
-            console.error('[KICKALL]', error)
+            console.error('[KICKALL ERROR]', error.stack || error.message)
         }
     }
 }
