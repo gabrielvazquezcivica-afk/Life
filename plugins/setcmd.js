@@ -28,7 +28,7 @@ const handler = {
 
     if (!sticker) {
       return sock.sendMessage(m.key.remoteJid, {
-        text: '⚠️ Responde a un sticker con:\n.addcmd .kickall'
+        text: '⚠️ Responde a un sticker con:\n.addcmd <comando>'
       }, { quoted: m })
     }
 
@@ -36,7 +36,7 @@ const handler = {
 
     if (!command.startsWith('.')) {
       return sock.sendMessage(m.key.remoteJid, {
-        text: '⚠️ Especifica un comando válido.\n\nEjemplo: .addcmd .kickall'
+        text: '⚠️ Especifica un comando válido.\n\nEjemplo: .addcmd .p'
       }, { quoted: m })
     }
 
@@ -52,7 +52,7 @@ const handler = {
     saveCommands(data)
 
     await sock.sendMessage(m.key.remoteJid, {
-      text: `✅ COMANDO ASIGNADO AL STICKER\n\n🎯 Comando: ${command}\n\nAhora, al enviar ese sticker, se ejecutará el comando.`
+      text: `✅ COMANDO ASIGNADO AL STICKER\n\n🎯 Comando: ${command}`
     }, { quoted: m })
   }
 }
