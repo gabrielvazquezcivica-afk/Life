@@ -1,4 +1,3 @@
-
 import config from '../config.js'
 
 const handler = {
@@ -9,7 +8,7 @@ const handler = {
 
         if (!jid?.endsWith('@g.us')) return
 
-        // Reaccionar a cualquier persona que use el comando.
+        // Reaccionar a todos los que usen el comando.
         try {
             await sock.sendMessage(jid, {
                 react: {
@@ -32,7 +31,7 @@ const handler = {
 
             const sender =
                 m.key.participant ||
-                (m.key.fromMe ? sock.user.id : '')
+                (m.key.fromMe ? sock.user?.lid || sock.user?.id : '')
 
             const senderParticipant = participants.find(p => {
                 const ids = [p.id, p.jid, p.lid].filter(Boolean)
@@ -47,23 +46,20 @@ const handler = {
                 senderParticipant?.admin === 'admin' ||
                 senderParticipant?.admin === 'superadmin'
 
-            // Reconocer al propietario configurado.
+            // Comprobar propietario configurado.
             const owners = Array.isArray(config.OWNER_NUMBER)
                 ? config.OWNER_NUMBER
                 : config.OWNER_NUMBER
                     ? [config.OWNER_NUMBER]
                     : []
 
-            const senderNumber = sender
+            const senderNumber = String(sender || '')
                 .split('@')[0]
                 .split(':')[0]
                 .replace(/\D/g, '')
 
             const isOwner = owners.some(owner => {
-                const value = Array.isArray(owner)
-                    ? owner[0]
-                    : owner
-
+                const value = Array.isArray(owner) ? owner[0] : owner
                 if (!value) return false
 
                 const ownerNumber = String(value)
@@ -83,36 +79,39 @@ const handler = {
                 isOwner
             })
 
-            // Solo administradores o propietario pueden expulsar.
+            // Solo administradores o propietario pueden ejecutar.
             if (!isAdmin && !isOwner) {
                 console.log('[KICKALL] Usuario sin permisos')
                 return
             }
 
-            // Identificadores posibles de la cuenta del bot.
-            const botIds = [
-                sock.user?.id,
-                sock.user?.id?.split(':')[0],
-                sock.user?.id?.split('@')[0]
-                    ? `${sock.user.id.split('@')[0]}@s.whatsapp.net`
-                    : null,
-                sock.user?.lid
-            ].filter(Boolean)
+            // Identificar al bot por JID o LID.
+            const botJid = sock.user?.id?.split(':')[0]
+            const botLid = sock.user?.lid?.split(':')[0]
 
-            const botParticipant = participants.find(p => {
-                const participantIds = [
-                    p.id,
-                    p.jid,
-                    p.lid
-                ].filter(Boolean)
+            let botParticipant = participants.find(p => {
+                const ids = [p.id, p.jid, p.lid].filter(Boolean)
 
-                return participantIds.some(id =>
-                    botIds.some(botId =>
-                        id === botId ||
-                        normalizeJid(id) === normalizeJid(botId)
+                return ids.some(id => {
+                    const normalized = normalizeJid(id)
+
+                    return (
+                        normalized === normalizeJid(botJid) ||
+                        normalized === normalizeJid(botLid)
                     )
-                )
+                })
             })
+
+            // Si el mensaje lo envió el propio bot y su participante
+            // ya fue identificado como administrador, reutilizarlo.
+            if (
+                !botParticipant &&
+                m.key.fromMe &&
+                senderParticipant &&
+                senderParticipant.admin
+            ) {
+                botParticipant = senderParticipant
+            }
 
             console.log('[KICKALL BOT ADMIN]', {
                 botId: sock.user?.id,
@@ -138,7 +137,8 @@ const handler = {
                 botParticipant.id,
                 botParticipant.jid,
                 botParticipant.lid,
-                ...botIds
+                botJid,
+                botLid
             ].filter(Boolean)
 
             const toKick = participants
