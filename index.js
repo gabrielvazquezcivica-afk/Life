@@ -1,4 +1,3 @@
-
 import { connect } from './lib/connection.js'
 import config from './config.js'
 
@@ -13,7 +12,6 @@ const __dirname = path.dirname(__filename)
 
 const PLUGINS_DIR = path.join(__dirname, 'plugins')
 const PREFIX = config.PREFIX || '.'
-const START_TIME = Math.floor(Date.now() / 1000)
 
 const commands = new Map()
 const processedMessages = new Set()
@@ -23,7 +21,6 @@ const groupCacheTime = new Map()
 const MAX_PROCESSED_MESSAGES = 5000
 const GROUP_CACHE_TTL = 10 * 60 * 1000
 
-// Banner
 function banner() {
     console.clear()
 
@@ -81,10 +78,13 @@ async function loadPlugins() {
                 commands.set(name.toLowerCase(), handler)
             }
 
-            console.log(chalk.green('  ✔ '), chalk.white(file))
+            console.log(
+                chalk.green('  ✔ '),
+                chalk.white(file)
+            )
         } catch (error) {
             console.log(
-                chalk.red(`  ✖ ${file}: ${error.message}`)
+                chalk.red(`  ✖ ${file}: ${error.stack || error.message}`)
             )
         }
     }
@@ -95,12 +95,16 @@ async function loadPlugins() {
         chalk.white(commands.size),
         '\n'
     )
+
+    console.log(
+        chalk.cyan('  Comandos registrados:'),
+        [...commands.keys()].join(', ')
+    )
 }
 
-// Obtener texto
+// Extraer texto
 function getText(m) {
     const msg = m.message
-
     if (!msg) return ''
 
     const message =
@@ -122,24 +126,6 @@ function getText(m) {
         message.interactiveResponseMessage?.body?.text ||
         ''
     ).trim()
-}
-
-// Timestamp de Baileys
-function getTimestampSeconds(timestamp) {
-    if (timestamp == null) return 0
-
-    if (typeof timestamp === 'object') {
-        if (typeof timestamp.toNumber === 'function') {
-            return timestamp.toNumber()
-        }
-
-        if (typeof timestamp.low === 'number') {
-            return timestamp.low
-        }
-    }
-
-    const value = Number(timestamp)
-    return Number.isFinite(value) ? value : 0
 }
 
 // Nombre del grupo
@@ -179,7 +165,7 @@ function getSenderName(m) {
     return m.pushName || m.key.participant || m.key.remoteJid
 }
 
-// Log de comandos
+// Registro de comandos
 function logCommand({ user, group, command, elapsed, fromMe }) {
     const time = new Date().toLocaleTimeString('es-MX', {
         hour12: false
@@ -224,10 +210,7 @@ function rememberMessage(uniqueId) {
 
     if (processedMessages.size > MAX_PROCESSED_MESSAGES) {
         const oldest = processedMessages.values().next().value
-
-        if (oldest !== undefined) {
-            processedMessages.delete(oldest)
-        }
+        if (oldest !== undefined) processedMessages.delete(oldest)
     }
 
     return true
@@ -242,28 +225,41 @@ async function processMessage(sock, m) {
 
         if (jid === 'status@broadcast') return
 
-        const timestamp = getTimestampSeconds(m.messageTimestamp)
-
-        if (timestamp > 0 && timestamp < START_TIME) return
+        // Ya no se descartan mensajes por su timestamp.
 
         const text = getText(m)
 
-        // Ignorar mensajes normales sin prefijo.
         if (!text || !text.startsWith(PREFIX)) return
 
         const body = text.slice(PREFIX.length).trim()
         if (!body) return
 
-        const id = m.key.id
-
-        if (id && !rememberMessage(`${jid}:${id}`)) return
-
         const parts = body.split(/\s+/)
         const commandName = parts.shift().toLowerCase()
         const args = parts
 
+        // Diagnóstico temporal de kickall
+        if (commandName === 'kickall') {
+            console.log(chalk.yellow('[DEBUG KICKALL]'), {
+                texto: text,
+                comando: commandName,
+                encontrado: commands.has(commandName),
+                grupo: jid.endsWith('@g.us'),
+                fromMe: Boolean(m.key.fromMe)
+            })
+        }
+
+        const id = m.key.id
+
+        if (id && !rememberMessage(`${jid}:${id}`)) return
+
         const handler = commands.get(commandName)
-        if (!handler) return
+        if (!handler) {
+            if (commandName === 'kickall') {
+                console.log(chalk.red('[KICKALL] Comando no registrado'))
+            }
+            return
+        }
 
         const start = performance.now()
         const groupPromise = getGroupName(sock, jid)
@@ -289,7 +285,6 @@ async function processMessage(sock, m) {
 }
 
 // Iniciar bot
-
 async function startBot() {
     banner()
 
@@ -314,12 +309,10 @@ async function startBot() {
     )
 }
 
-// Errores de inicio
 startBot().catch(error => {
     console.error(
         chalk.red('[ERROR FATAL]'),
         error.stack || error.message
     )
-
     process.exitCode = 1
 })
