@@ -289,6 +289,7 @@ async function processMessage(sock, m) {
 }
 
 // Iniciar bot
+
 async function startBot() {
     banner()
 
@@ -298,14 +299,14 @@ async function startBot() {
         chalk.hex('#B388FF')('  Conectando con WhatsApp...\n')
     )
 
-    const sock = await connect()
+    await connect(sock => {
+        sock.ev.on('messages.upsert', ({ messages, type }) => {
+            if (type !== 'notify' && type !== 'append') return
 
-    sock.ev.on('messages.upsert', ({ messages, type }) => {
-        if (type !== 'notify' && type !== 'append') return
-
-        for (const m of messages) {
-            void processMessage(sock, m)
-        }
+            for (const m of messages) {
+                void processMessage(sock, m)
+            }
+        })
     })
 
     console.log(
