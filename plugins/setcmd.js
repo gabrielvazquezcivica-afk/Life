@@ -2,7 +2,7 @@
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { getQuotedSticker } from '../lib/stickerHash.js'
+import { getQuotedSticker, getStickerHash } from '../lib/stickerHash.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -48,13 +48,11 @@ const handler = {
       }, { quoted: m })
     }
 
-    const hash = sticker.fileSha256
-      ? Buffer.from(sticker.fileSha256).toString('base64')
-      : null
+    const hash = getStickerHash(sticker)
 
     if (!hash) {
       return sock.sendMessage(m.key.remoteJid, {
-        text: '❌ No se pudo identificar el archivo del sticker.'
+        text: '❌ No se pudo obtener el hash del sticker.'
       }, { quoted: m })
     }
 
