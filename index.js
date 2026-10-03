@@ -16,12 +16,13 @@ let reconnecting = false
 
 const STICKERS_FILE = path.join(__dirname, 'data', 'stickers.json')
 const processedMessages = new Set()
+const processingMessages = new Set()
 
 function banner() {
   console.clear()
   console.log(chalk.cyan(`
   ╔══════════════════════════════╗
-  ║          EXCLUSIVE            ║
+  ║          EXCLUSIVE           ║
   ║       WhatsApp Bot           ║
   ╚══════════════════════════════╝
   `))
@@ -148,6 +149,7 @@ async function executeCommand(sock, m, commandText) {
   if (!command) return
 
   const handler = commands.get(command)
+
   if (!handler) {
     console.log(chalk.yellow(`Comando no encontrado: ${command}`))
     return
@@ -176,57 +178,78 @@ async function processSticker(sock, m) {
   if (!sticker) return
 
   const hash = getStickerHash(sticker)
-  if (!hash) return
+
+  if (!hash) {
+    console.log(chalk.yellow('Sticker recibido sin fileSha256'))
+    return
+  }
 
   const records = loadStickerCommands()
   const saved = records[hash]
 
-  if (!saved || typeof saved.command !== 'string') return
+  if (!saved || typeof saved.command !== 'string') {
+    return
+  }
+
+  console.log(chalk.cyan(`[STICKER] Comando detectado: ${saved.command}`))
 
   await executeCommand(sock, m, saved.command)
 }
 
 async function processMessage(sock, m) {
+  const messageId = m?.key?.id
+
   try {
     if (!m?.message || !m.key?.remoteJid) return
     if (m.key.remoteJid === 'status@broadcast') return
-    if (m.key.fromMe) return
 
-    const messageId = m.key.id
+    const messageContent = unwrapMessage(m.message)
+    const isSticker = Boolean(messageContent.stickerMessage)
+
+    // Los mensajes propios solo pueden activar asociaciones de stickers.
+    if (m.key.fromMe && !isSticker) return
 
     if (messageId) {
       if (processedMessages.has(messageId)) return
+      if (processingMessages.has(messageId)) return
 
-      processedMessages.add(messageId)
+      processingMessages.add(messageId)
+    }
 
-      if (processedMessages.size > 5000) {
-        const oldest = processedMessages.values().next().value
-        processedMessages.delete(oldest)
+    try {
+      if (isSticker) {
+        await processSticker(sock, m)
+        return
+      }
+
+      const text = getText(m).trim()
+      if (!text) return
+
+      const prefix = config.PREFIX || '.'
+      if (!text.startsWith(prefix)) return
+
+      await executeCommand(sock, m, text)
+    } finally {
+      if (messageId) {
+        processingMessages.delete(messageId)
+        processedMessages.add(messageId)
+
+        if (processedMessages.size > 5000) {
+          const oldest = processedMessages.values().next().value
+          processedMessages.delete(oldest)
+        }
       }
     }
-
-    const messageContent = unwrapMessage(m.message)
-
-    if (messageContent.stickerMessage) {
-      await processSticker(sock, m)
-      return
-    }
-
-    const text = getText(m).trim()
-    if (!text) return
-
-    const prefix = config.PREFIX || '.'
-    if (!text.startsWith(prefix)) return
-
-    await executeCommand(sock, m, text)
   } catch (error) {
+    if (messageId) processingMessages.delete(messageId)
     console.error(chalk.red('Error procesando mensaje:'), error)
   }
 }
 
 function setupSocket(sock) {
   sock.ev.on('messages.upsert', ({ messages, type }) => {
-    if (type !== 'notify') return
+    // Baileys puede notificar mensajes nuevos con distintos tipos de evento.
+    if (type !== 'notify' && type !== 'append') return
 
     for (const m of messages || []) {
       void processMessage(sock, m)
