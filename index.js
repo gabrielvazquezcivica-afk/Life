@@ -11,9 +11,7 @@ import { getStickerHash } from './lib/stickerHash.js'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-let commands = new Map()
-let reconnecting = false
-
+const commands = new Map()
 const STICKERS_FILE = path.join(__dirname, 'data', 'stickers.json')
 const processedMessages = new Set()
 
@@ -21,7 +19,7 @@ function banner() {
   console.clear()
   console.log(chalk.cyan(`
   ╔══════════════════════════════╗
-  ║          EXCLUSIVE           ║
+  ║         EXCLUSIVE            ║
   ║       WhatsApp Bot           ║
   ╚══════════════════════════════╝
   `))
@@ -56,7 +54,9 @@ async function loadPlugins() {
         : [handler.command]
 
       for (const name of names) {
-        if (name) commands.set(String(name).toLowerCase(), handler)
+        if (name) {
+          commands.set(String(name).toLowerCase(), handler)
+        }
       }
 
       console.log(chalk.green(`Plugin cargado: ${file}`))
@@ -148,6 +148,7 @@ async function executeCommand(sock, m, commandText) {
   if (!command) return
 
   const handler = commands.get(command)
+
   if (!handler) {
     console.log(chalk.yellow(`Comando no encontrado: ${command}`))
     return
@@ -187,23 +188,24 @@ async function processSticker(sock, m) {
 }
 
 async function processMessage(sock, m) {
-  try {
-    if (!m?.message || !m.key?.remoteJid) return
-    if (m.key.remoteJid === 'status@broadcast') return
+  if (!m?.message || !m.key?.remoteJid) return
+  if (m.key.remoteJid === 'status@broadcast') return
 
-    const messageId = m.key.id
+  // Evitar procesar dos veces el mismo mensaje.
+  const messageId = m.key.id
 
-    if (messageId) {
-      if (processedMessages.has(messageId)) return
+  if (messageId) {
+    if (processedMessages.has(messageId)) return
 
-      processedMessages.add(messageId)
+    processedMessages.add(messageId)
 
-      if (processedMessages.size > 5000) {
-        const oldest = processedMessages.values().next().value
-        processedMessages.delete(oldest)
-      }
+    if (processedMessages.size > 5000) {
+      const oldest = processedMessages.values().next().value
+      processedMessages.delete(oldest)
     }
+  }
 
+  try {
     const messageContent = unwrapMessage(m.message)
 
     if (messageContent.stickerMessage) {
@@ -224,45 +226,19 @@ async function processMessage(sock, m) {
 }
 
 function setupSocket(sock) {
+  console.log(chalk.cyan('Registrando eventos de mensajes...'))
+
   sock.ev.on('messages.upsert', ({ messages, type }) => {
     if (type !== 'notify') return
 
     for (const m of messages || []) {
-      void processMessage(sock, m)
+      void processMessage(sock, m).catch(error => {
+        console.error(chalk.red('Error procesando mensaje:'), error)
+      })
     }
   })
 
-  sock.ev.on('connection.update', async update => {
-    const { connection, lastDisconnect } = update
-
-    if (connection === 'open') {
-      reconnecting = false
-      console.log(chalk.green('Bot conectado correctamente'))
-    }
-
-    if (connection === 'close' && !reconnecting) {
-      reconnecting = true
-
-      const statusCode = lastDisconnect?.error?.output?.statusCode
-
-      console.log(
-        chalk.yellow(`Conexión cerrada. Código: ${statusCode ?? 'desconocido'}`)
-      )
-
-      if (statusCode !== 401) {
-        try {
-          const newSock = await connect()
-          setupSocket(newSock)
-        } catch (error) {
-          reconnecting = false
-          console.error(chalk.red('Error al reconectar:'), error)
-        }
-      } else {
-        reconnecting = false
-        console.log(chalk.red('La sesión necesita volver a vincularse'))
-      }
-    }
-  })
+  console.log(chalk.green('Eventos de mensajes registrados'))
 }
 
 async function startBot() {
@@ -273,10 +249,8 @@ async function startBot() {
   console.log(chalk.green('Iniciando bot...'))
 
   try {
-    const sock = await connect()
-    setupSocket(sock)
+    await connect(setupSocket)
   } catch (error) {
-    reconnecting = false
     console.error(chalk.red('Error iniciando el bot:'), error)
   }
 }
