@@ -228,12 +228,27 @@ async function processMessage(sock, m) {
 function setupSocket(sock) {
   console.log(chalk.cyan('Registrando eventos de mensajes...'))
 
+  sock.ev.on('connection.update', ({ connection }) => {
+    if (connection) {
+      console.log(`[DEBUG] Estado de conexión: ${connection}`)
+    }
+  })
+
   sock.ev.on('messages.upsert', ({ messages, type }) => {
-    if (type !== 'notify') return
+    console.log(
+      `[DEBUG] messages.upsert: tipo=${type}, cantidad=${messages?.length ?? 0}`
+    )
 
     for (const m of messages || []) {
+      console.log(
+        `[DEBUG] Mensaje recibido: fromMe=${!!m.key?.fromMe}, ` +
+        `contenido=${Object.keys(m.message || {}).join(',') || 'vacío'}`
+      )
+
+      if (type !== 'notify') continue
+
       void processMessage(sock, m).catch(error => {
-        console.error(chalk.red('Error procesando mensaje:'), error)
+        console.error('[DEBUG] Error procesando mensaje:', error)
       })
     }
   })
