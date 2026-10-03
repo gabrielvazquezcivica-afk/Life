@@ -6,6 +6,7 @@ import path from 'path'
 import { fileURLToPath, pathToFileURL } from 'url'
 import chalk from 'chalk'
 import { performance } from 'perf_hooks'
+import { getStickerHash } from './lib/stickerHash.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -16,18 +17,16 @@ let reconnecting = false
 const STICKERS_FILE = path.join(__dirname, 'data', 'stickers.json')
 const processedMessages = new Set()
 
-// Mostrar el banner
 function banner() {
   console.clear()
   console.log(chalk.cyan(`
   ╔══════════════════════════════╗
-  ║          TIBU BOT            ║
+  ║          EXCLUSIVE            ║
   ║       WhatsApp Bot           ║
   ╚══════════════════════════════╝
   `))
 }
 
-// Cargar los plugins
 async function loadPlugins() {
   const pluginsDir = path.join(__dirname, 'plugins')
 
@@ -69,38 +68,23 @@ async function loadPlugins() {
   console.log(chalk.cyan(`Total de comandos: ${commands.size}`))
 }
 
-// Obtener el mensaje interno
 function unwrapMessage(message) {
   let current = message
 
   while (current) {
-    if (current.ephemeralMessage?.message) {
-      current = current.ephemeralMessage.message
-      continue
-    }
+    const next =
+      current.ephemeralMessage?.message ||
+      current.viewOnceMessage?.message ||
+      current.viewOnceMessageV2?.message ||
+      current.viewOnceMessageV2Extension?.message
 
-    if (current.viewOnceMessage?.message) {
-      current = current.viewOnceMessage.message
-      continue
-    }
-
-    if (current.viewOnceMessageV2?.message) {
-      current = current.viewOnceMessageV2.message
-      continue
-    }
-
-    if (current.viewOnceMessageV2Extension?.message) {
-      current = current.viewOnceMessageV2Extension.message
-      continue
-    }
-
-    break
+    if (!next) break
+    current = next
   }
 
   return current || {}
 }
 
-// Obtener el texto del mensaje
 function getText(m) {
   const message = unwrapMessage(m.message || {})
 
@@ -117,15 +101,6 @@ function getText(m) {
   )
 }
 
-// Obtener la descripción exacta del sticker
-function getStickerLabel(sticker) {
-  if (typeof sticker?.accessibilityLabel !== 'string') return null
-  if (!sticker.accessibilityLabel.length) return null
-
-  return sticker.accessibilityLabel
-}
-
-// Cargar las asociaciones de stickers
 function loadStickerCommands() {
   try {
     if (!fs.existsSync(STICKERS_FILE)) {
@@ -144,32 +119,6 @@ function loadStickerCommands() {
   }
 }
 
-// Ejecutar un comando asociado a la descripción exacta
-async function processSticker(sock, m) {
-  const message = unwrapMessage(m.message || {})
-  const sticker = message.stickerMessage
-
-  if (!sticker) return
-
-  const label = getStickerLabel(sticker)
-
-  // Ignorar stickers que no contienen descripción
-  if (label === null) return
-
-  const records = loadStickerCommands()
-  const saved = records[`label:${label}`]
-
-  // Ignorar stickers sin comando asignado
-  if (!saved) return
-
-  const commandText = saved.command
-
-  if (typeof commandText !== 'string' || !commandText.trim()) return
-
-  await executeCommand(sock, m, commandText)
-}
-
-// Registrar la ejecución de un comando
 function logCommand(command, m, duration) {
   const sender = m.key.participant || m.key.remoteJid
 
@@ -180,10 +129,9 @@ function logCommand(command, m, duration) {
   )
 }
 
-// Ejecutar un comando
 async function executeCommand(sock, m, commandText) {
   const prefix = config.PREFIX || '.'
-  const text = commandText.trim()
+  const text = String(commandText || '').trim()
 
   if (!text) return
 
@@ -200,7 +148,10 @@ async function executeCommand(sock, m, commandText) {
   if (!command) return
 
   const handler = commands.get(command)
-  if (!handler) return
+  if (!handler) {
+    console.log(chalk.yellow(`Comando no encontrado: ${command}`))
+    return
+  }
 
   const start = performance.now()
 
@@ -218,7 +169,23 @@ async function executeCommand(sock, m, commandText) {
   }
 }
 
-// Procesar los mensajes
+async function processSticker(sock, m) {
+  const message = unwrapMessage(m.message || {})
+  const sticker = message.stickerMessage
+
+  if (!sticker) return
+
+  const hash = getStickerHash(sticker)
+  if (!hash) return
+
+  const records = loadStickerCommands()
+  const saved = records[hash]
+
+  if (!saved || typeof saved.command !== 'string') return
+
+  await executeCommand(sock, m, saved.command)
+}
+
 async function processMessage(sock, m) {
   try {
     if (!m?.message || !m.key?.remoteJid) return
@@ -227,7 +194,6 @@ async function processMessage(sock, m) {
 
     const messageId = m.key.id
 
-    // Evitar procesar el mismo mensaje dos veces
     if (messageId) {
       if (processedMessages.has(messageId)) return
 
@@ -241,7 +207,6 @@ async function processMessage(sock, m) {
 
     const messageContent = unwrapMessage(m.message)
 
-    // Ejecutar el comando de un sticker
     if (messageContent.stickerMessage) {
       await processSticker(sock, m)
       return
@@ -251,8 +216,6 @@ async function processMessage(sock, m) {
     if (!text) return
 
     const prefix = config.PREFIX || '.'
-
-    // Comprobar el prefijo
     if (!text.startsWith(prefix)) return
 
     await executeCommand(sock, m, text)
@@ -261,7 +224,6 @@ async function processMessage(sock, m) {
   }
 }
 
-// Configurar los eventos del socket
 function setupSocket(sock) {
   sock.ev.on('messages.upsert', ({ messages, type }) => {
     if (type !== 'notify') return
@@ -304,7 +266,6 @@ function setupSocket(sock) {
   })
 }
 
-// Iniciar el bot
 async function startBot() {
   banner()
 
