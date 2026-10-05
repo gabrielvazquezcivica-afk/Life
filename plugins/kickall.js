@@ -1,4 +1,3 @@
-
 import config from '../config.js'
 
 const handler = {}
@@ -29,7 +28,6 @@ handler.run = async (sock, m) => {
 
   if (!jid?.endsWith('@g.us')) return
 
-  // Reaccionar a quien use el comando.
   try {
     await sock.sendMessage(jid, {
       react: {
@@ -52,7 +50,6 @@ handler.run = async (sock, m) => {
       obtenerIds(p).includes(sender)
     )
 
-    // Identificar al usuario que ejecuta el comando.
     const idsUsuario = [
       sender,
       ...obtenerIds(usuarioInfo || {})
@@ -77,7 +74,6 @@ handler.run = async (sock, m) => {
 
     if (!esAdminUsuario && !esOwner) return
 
-    // Identificar al bot.
     const idsBot = [
       sock.user?.id,
       sock.user?.jid,
@@ -90,7 +86,6 @@ handler.run = async (sock, m) => {
       coinciden(obtenerIds(p), idsBot)
     )
 
-    // Si el comando lo envió el propio bot, usar su participante identificado.
     if (!botInfo && m.key.fromMe && usuarioInfo) {
       botInfo = usuarioInfo
     }
@@ -103,7 +98,6 @@ handler.run = async (sock, m) => {
 
     const idsDelBot = obtenerIds(botInfo)
 
-    // Conservar al bot y expulsar a los demás participantes.
     const objetivos = participantes
       .filter(p => !coinciden(obtenerIds(p), idsDelBot))
       .map(p => p.id || p.jid)
@@ -111,26 +105,12 @@ handler.run = async (sock, m) => {
 
     if (!objetivos.length) return
 
-    const resultados = await sock.groupParticipantsUpdate(
+    await sock.groupParticipantsUpdate(
       jid,
       objetivos,
       'remove'
     )
 
-    const expulsados = Array.isArray(resultados)
-      ? resultados.filter(r =>
-          r.status === '200' ||
-          r.status === '201' ||
-          r.status === 200 ||
-          r.status === 201
-        ).length
-      : 0
-
-    if (expulsados > 0) {
-      await sock.sendMessage(jid, {
-  text: `𝐃𝐎𝐌𝐀𝐃𝐎𝐒 𝐗 𝐄𝐗𝐂𝐋𝐔𝐒𝐈𝐕𝐄\n> 𝘨𝘨 𝘴𝘦 𝘧𝘶𝘦𝘳𝘰𝘯 𝘥𝘰𝘮𝘢𝘥𝘰𝘴: ${expelled}`
-})
-    }
   } catch {}
 }
 
