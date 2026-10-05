@@ -1,83 +1,69 @@
 
-const handler = {
-  command: ['demoteall'],
+export default {
+  name: 'demoteall',
+  alias: ['quitaradmins', 'demotetodos'],
+  category: 'group',
+  description: 'Quita los administradores del grupo',
 
-  run: async (sock, m) => {
-    const jid = m.key.remoteJid
-
-    if (!jid.endsWith('@g.us')) return
+  async execute(sock, m, args, config) {
+    const jid = m.key.remoteJid;
 
     const react = async (emoji) => {
-      try {
-        await sock.sendMessage(jid, {
-          react: { text: emoji, key: m.key }
-        })
-      } catch {}
-    }
+      await sock.sendMessage(jid, {
+        react: { text: emoji, key: m.key }
+      }).catch(() => {});
+    };
 
     try {
-      const metadata = await sock.groupMetadata(jid)
-
-      const normalizeJid = (value) =>
-        value?.split(':')[0]?.replace(/@.*$/, '') || ''
-
-      const sender = m.key.participant || m.key.remoteJid
-      const botJid = sock.user.id
-
-      const senderParticipant = metadata.participants.find(
-        p => normalizeJid(p.id) === normalizeJid(sender)
-      )
-
-      const botParticipant = metadata.participants.find(
-        p => normalizeJid(p.id) === normalizeJid(botJid)
-      )
-
-      // Si quien ejecuta no es administrador, solo reacciona.
-      if (
-        !senderParticipant ||
-        !['admin', 'superadmin'].includes(senderParticipant.admin)
-      ) {
-        await react('👾')
-        return
+      if (!jid.endsWith('@g.us')) {
+        return await react('😂');
       }
 
-      // El bot debe ser administrador.
-      if (
-        !botParticipant ||
-        !['admin', 'superadmin'].includes(botParticipant.admin)
-      ) return
+      const metadata = await sock.groupMetadata(jid);
+      const sender = m.key.participant || m.key.remoteJid;
+      const botJid = sock.user.id.split(':')[0] + '@s.whatsapp.net';
 
-      const admins = metadata.participants.filter(
-        p =>
-          ['admin', 'superadmin'].includes(p.admin) &&
-          normalizeJid(p.id) !== normalizeJid(botJid)
-      )
+      const normalize = (id = '') =>
+        id.replace(/:\d+/, '').split('@')[0];
 
-      if (!admins.length) {
-        await sock.sendMessage(jid, {
-          text: 'Admins removidos: 0'
-        })
-        return
+      const senderIsAdmin = metadata.participants.some(p =>
+        [p.id, p.jid, p.lid].filter(Boolean).some(
+          id => normalize(id) === normalize(sender)
+        ) && (p.admin === 'admin' || p.admin === 'superadmin')
+      );
+
+      if (!senderIsAdmin) {
+        return await react('😂');
       }
 
-      let removed = 0
+      const botParticipant = metadata.participants.find(p =>
+        [p.id, p.jid, p.lid].filter(Boolean).some(
+          id => normalize(id) === normalize(botJid)
+        )
+      );
 
-      for (const participant of admins) {
-        try {
-          await sock.groupParticipantsUpdate(
-            jid,
-            [participant.id],
-            'demote'
+      if (!botParticipant?.admin) {
+        return await react('😂');
+      }
+
+      const targets = metadata.participants
+        .filter(p =>
+          (p.admin === 'admin') &&
+          ![p.id, p.jid, p.lid].filter(Boolean).some(
+            id => normalize(id) === normalize(sender) ||
+                  normalize(id) === normalize(botJid)
           )
-          removed++
-        } catch {}
+        )
+        .map(p => p.id)
+        .filter(Boolean);
+
+      if (targets.length > 0) {
+        await sock.groupParticipantsUpdate(jid, targets, 'demote');
       }
 
-      await sock.sendMessage(jid, {
-        text: `Admins removidos: ${removed}`
-      })
-    } catch {}
+      await react('👾');
+    } catch (error) {
+      await react('😂');
+    }
   }
-}
-
-export default handler
+};
